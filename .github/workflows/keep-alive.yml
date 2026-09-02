@@ -1,0 +1,28 @@
+name: Keep Supabase Alive
+
+# Supabase 무료 플랜은 일정 기간(약 1주일) DB 요청이 없으면 프로젝트를 자동 일시정지합니다.
+# 이를 막기 위해 며칠에 한 번씩 가벼운 조회를 보내 활동을 기록합니다.
+on:
+  schedule:
+    - cron: '0 3 */3 * *' # UTC 03:00, 3일마다
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase (documents 테이블 count 조회)
+        run: |
+          status=$(curl -s -o /tmp/resp.txt -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/documents?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
+          echo "HTTP status: $status"
+          cat /tmp/resp.txt
+          if [ "$status" -ge 400 ]; then
+            echo "::error::Supabase ping failed with status $status"
+            exit 1
+          fi
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
