@@ -573,6 +573,24 @@ serve(async (req) => {
         }
       }
 
+      // [B-4] 문서(doc_id) 단위로 게시일 최신순 정렬 — 같은 주제의 여러 연도 공지가
+      // 섞여 있을 때 모델이 최신 공지를 먼저 읽도록 한다. 청크 확장 단계(id 오름차순)가
+      // 원래의 재랭킹 순서를 흐트러뜨리는 걸 보완. 문서 내부 청크 순서(원문 순서)는 그대로 두고
+      // 문서 그룹 간 순서만 바꾼다. 날짜 없는 문서(상시 정보 등)는 원래 위치를 유지한다(안정 정렬).
+      const docGroups = new Map<string, any[]>();
+      for (const d of documents) {
+        const key = String(d.metadata?.doc_id ?? d.id);
+        if (!docGroups.has(key)) docGroups.set(key, []);
+        docGroups.get(key)!.push(d);
+      }
+      const groupDate = (g: any[]) => g.find((d) => d.metadata?.date)?.metadata?.date ?? null;
+      documents = [...docGroups.values()]
+        .sort((a, b) => {
+          const da = groupDate(a), db = groupDate(b);
+          return da && db ? db.localeCompare(da) : 0; // 둘 다 날짜 있을 때만 최신순, 아니면 원래 순서 유지
+        })
+        .flat();
+
       // 문서별 원문 URL을 자료에 노출 → 예약/신청 안내 시 링크 제공 가능 (문서당 1회)
       const seenUrl = new Set<string>();
       const docsContext = documents.map((d: any) => {
