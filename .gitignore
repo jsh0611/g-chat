@@ -56,6 +56,9 @@ data-pipeline/data/
 data-pipeline/*.log
 data-pipeline/_t.txt
 
+# refresh_data.ps1 실행 로그 (로컬 스케줄러 전용)
+logs/
+
 # 논문·발표·과제 자료 (로컬 전용)
 paper/
 *.pptx

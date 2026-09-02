@@ -83,7 +83,8 @@ flowchart TD
 
 ## Operations
 
-Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 자동으로 일시정지합니다. GitHub Actions로 3일마다 가벼운 헬스체크 요청을 보내 이를 방지합니다(`.github/workflows/keep-alive.yml`).
+- **가용성 유지**: Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 자동으로 일시정지합니다. GitHub Actions로 3일마다 가벼운 헬스체크 요청을 보내 이를 방지합니다(`.github/workflows/keep-alive.yml`).
+- **데이터 갱신**: 공지·게시글은 매주, 관광 POI는 분기마다 `refresh_data.ps1`로 갱신합니다. 크롤링 원본에 개인정보가 섞여 있어 GitHub Actions 같은 외부 CI는 쓰지 않고, 로컬(또는 개인 서버)에서 Windows 작업 스케줄러로 실행합니다 — 스크립트 상단 주석에 등록 명령이 있습니다.
 
 ## Tech Stack
 
@@ -122,6 +123,7 @@ check_db.js / check_supabase.js         # 적재 결과 / DB 연결·RLS 검증
 check_gateway.js                        # LLM 게이트웨이(키·모델) 헬스체크
 check_conv.mjs                          # 최근 대화 로그 조회
 set_secrets.js                          # .env → Supabase Edge Function 시크릿 동기화
+refresh_data.ps1                        # 크롤링→적재 전체 갱신 오케스트레이션 (로컬 스케줄러용)
 ```
 
 크롤링 원본 데이터, 실제 발급받은 키, 내부 테스트 스위트는 개인정보·운영 보안 문제로 저장소에서 제외했습니다 (`.gitignore` 참고). 아래 실행 방법은 구조를 재현하기 위한 안내이며, 동작시키려면 각자 데이터와 키가 필요합니다.
