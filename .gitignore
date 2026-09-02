@@ -3,6 +3,12 @@ node_modules/
 jspm_packages/
 web_modules/
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
 # Debug logs
 npm-debug.log*
 yarn-debug.log*
@@ -44,6 +50,11 @@ test_*.js
 CLAUDE.md
 HANDOVER.md
 PORTFOLIO.md
+
+# data-pipeline: 크롤링 원본·중간산출물(개인정보 포함 가능)·실행 로그·스크래치
+data-pipeline/data/
+data-pipeline/*.log
+data-pipeline/_t.txt
 
 # 논문·발표·과제 자료 (로컬 전용)
 paper/

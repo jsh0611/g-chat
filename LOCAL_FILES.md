@@ -13,6 +13,7 @@
 | `HANDOVER.md` | 인수인계 문서 — Supabase 신규 구축 절차(스키마 SQL 포함)·계정 정리·검증 | 인계 시 직접 전달 |
 | `PORTFOLIO.md` | 이력서 첨부용 프로젝트 발전 기록 (피드백→기술도입→해결 루프 서사) | 개인 보관 |
 | `user-feedback/` | 사용자 피드백 원본 (스크린샷·txt) + 리포트 HTML | 팀 공유 |
+| `data-pipeline/data/` | 크롤러 원본·중간 산출물(raw HTML, 파싱 JSON, documents.jsonl 등, 개인정보 포함이라 비공개) | `python main.py`로 재수집 또는 팀 공유 |
 
 ## 논문·발표·과제 자료 (`paper/`, `*.pptx`, `*.pdf`, `*.xlsx` — 전부 ignore)
 

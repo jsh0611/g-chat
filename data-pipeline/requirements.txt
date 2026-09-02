@@ -1,0 +1,12 @@
+requests>=2.31
+beautifulsoup4>=4.12
+# 선택: PDF 첨부 텍스트·표 추출용
+pdfplumber>=0.11
+# 선택: HWP(v5, 국내 관공서 .hwp) 첨부 텍스트·표 추출용
+#   LibreOffice 의 HWP 필터는 HWP v5 를 제대로 못 읽으므로 전용 라이브러리를 쓴다.
+pyhwp>=0.1b15
+#
+# HWPX/DOC(X)/XLS(X)/PPT(X)/ODT 등 첨부 표 추출에는 LibreOffice(soffice)가 필요합니다(pip 아님).
+#   Ubuntu:  sudo apt install libreoffice
+#   Windows: https://ko.libreoffice.org 에서 설치
+# 미설치 시 해당 첨부만 건너뛰고 나머지는 정상 동작합니다.

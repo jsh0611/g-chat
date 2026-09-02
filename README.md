@@ -56,7 +56,17 @@ flowchart TD
 
 ## Data Pipeline
 
-크롤링 데이터(JSONL)를 임베딩까지 적재하는 배치 스크립트가 검색 품질에 실제로 기여하는 부분입니다.
+크롤링부터 임베딩 적재까지 두 단계로 나뉘어 있습니다. 수집·정제(Python, `data-pipeline/`)와 청킹·임베딩·적재(Node, 저장소 루트)를 분리해, 크롤러가 없어도 이미 만들어진 `documents.jsonl`만으로 후단을 재현할 수 있습니다.
+
+**1) 수집·정제 (`data-pipeline/`, Python)**
+
+- **증분 크롤링**: 공단 홈페이지 메인 페이지에서 시작해 내부 링크를 재귀적으로 따라가며 게시판·게시글·시설 페이지를 수집합니다. 이미 수집한 글은 재요청하지 않고, 목록 페이지만 매번 다시 훑어 새 글을 찾습니다.
+- **병합 셀 표 파싱**: HTML `rowspan`/`colspan`으로 병합된 표 셀을 격자로 펼쳐 열이 밀리지 않게 복원합니다.
+- **첨부 텍스트 추출**: 게시글에 첨부된 PDF(`pdfplumber`)·HWP(`pyhwp`)·기타 오피스 문서(LibreOffice headless 변환)에서 본문과 표를 추출합니다. PDF 추출은 별도 프로세스로 격리해 타임아웃을 걸어, 텍스트가 빽빽한 파일 하나가 전체 파이프라인을 멈추지 않게 합니다.
+- **OCR(선택)**: 이미지·스캔 PDF는 본 파이프라인과 분리된 Tesseract 기반 OCR로 처리 후 별도로 병합합니다.
+- **원본 캐시**: HTML은 SQLite 한 파일에 저장해, 파싱 로직만 바뀌었을 때 사이트를 다시 방문하지 않고 재처리할 수 있습니다.
+
+**2) 청킹·임베딩·적재 (저장소 루트, Node)**
 
 - **표 정규화**: 크롤러가 받아온 마크다운 표는 병합 셀(rowspan/colspan)이 풀려 행이 쪼개지거나, 열 방향 표(구분 + 속성)가 그대로 들어오는 경우가 많아 LLM이 잘 읽지 못했습니다. 표 형태를 감지해 "- 프로그램명: 요가 주간 | 시간: 10:00" 같은 레코드 문장으로 변환하는 전처리를 거칩니다.
 - **청크 분할**: 500자 단위로 자르되 줄 중간에서 끊지 않아 표에서 변환된 레코드 한 줄이 반토막 나지 않게 합니다.
@@ -85,6 +95,7 @@ Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 
 | 임베딩 | OpenAI `text-embedding-3-small` (1536차원) |
 | 외부 API | 국토교통부 TAGO(고속버스·열차), 한국관광공사 TourAPI(관광 POI·축제) |
 | 채널 연동 | 카카오 i 오픈빌더 (스킬 서버 + 콜백) |
+| 데이터 수집 | Python (`requests`, `beautifulsoup4`, `pdfplumber`, Tesseract OCR) |
 | CI/운영 | GitHub Actions (헬스체크) |
 
 ## Dataset Size
@@ -94,8 +105,15 @@ Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 
 ## Project Structure
 
 ```
+data-pipeline/                          # 크롤링·정제 (Python, 자체 README 참고)
+├── main.py                             #   실행기 (crawl → parse → preprocess)
+├── config.py                           #   수집 대상·제외 URL·크롤링 매너 설정
+├── crawler/                            #   1단계: 수집 (증분, 유일하게 네트워크 사용)
+├── parser/                             #   2단계: HTML → 구조화 JSON (병합 셀 표 파싱)
+└── preprocessor/                       #   3단계: 정제 → documents.jsonl (+ 첨부 추출, OCR)
+
 supabase/functions/kakao-bot/index.ts   # 의도 분류·도구 호출·검색·답변 생성을 담당하는 본체
-ingest.js                               # 공단 문서 파싱 → 표 정규화 → 청크 → 임베딩 → 적재
+ingest.js                               # documents.jsonl → 표 정규화 → 청크 → 임베딩 → 적재
 ingest_tour.js                          # TourAPI 관광 POI 적재
 table_utils.js                          # 마크다운 표 → 레코드 문장 변환
 patch_reserve_links.js                  # 원본 페이지에서 예약 링크 재조회·주입
@@ -116,6 +134,10 @@ cp .env.example .env   # Supabase 키, LLM 게이트웨이 키, 임베딩용 Ope
 ```
 
 ```bash
+# 0. (선택) 원본부터 재수집하려면 — data-pipeline/README.md 참고
+cd data-pipeline && python main.py && cd ..
+cp data-pipeline/data/processed/documents.jsonl .   # ingest.js는 저장소 루트의 documents.jsonl을 읽음
+
 # 1. 데이터 적재
 node ingest.js
 node ingest_tour.js
