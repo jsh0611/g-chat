@@ -318,7 +318,13 @@ serve(async (req) => {
       ]);
       const rawIntent = intentRes.choices[0].message.content?.trim().toLowerCase() ?? '';
       const intent = ['chitchat', 'transport', 'event', 'tour', 'facility', 'timely', 'general'].includes(rawIntent) ? rawIntent : 'general';
-      const isReservationQuestion = intent === 'facility' && /예약|예매/.test(userMessage);
+      const isReservationQuestion = /예약|예매/.test(userMessage);
+      const normalizeReservationSearchTerm = (text: string) => text
+        .replace(/예매/g, '예약')
+        .replace(/([가-힣]{2,})(?:을|를|은|는)(?=\s|$)/g, '$1');
+      if (isReservationQuestion) {
+        searchQuery = normalizeReservationSearchTerm(searchQuery);
+      }
 
       // 답변 저장 + 카카오 콜백 전송 (모든 분기 공통) — 전송 직전 유출 가드 통과
       const finish = async (rawAnswer: string, reservationUrl?: string) => {
@@ -326,12 +332,12 @@ serve(async (req) => {
         const outputs: any[] = [{ simpleText: { text: answer } }];
         if (reservationUrl) {
           outputs.push({
-            basicCard: {
+            textCard: {
               description: '아래 버튼을 눌러 예약 홈페이지로 이동하세요.',
               buttons: [{
                 action: 'webLink',
                 label: '예약하기',
-                webLink: reservationUrl,
+                webLinkUrl: reservationUrl,
               }],
             },
           });
@@ -452,6 +458,12 @@ serve(async (req) => {
           .filter((w: string) => w.length >= 2)
           .sort((a: string, b: string) => b.length - a.length)
           .slice(0, 2);
+      }
+      if (isReservationQuestion) {
+        keywords = [...new Set([
+          ...keywords.map(normalizeReservationSearchTerm).map((k) => k.includes('예약') ? '예약' : k),
+          '예약',
+        ])].slice(0, 4);
       }
 
       const queryEmbedding: number[] | null = embedRes?.data?.[0]?.embedding ?? null;
