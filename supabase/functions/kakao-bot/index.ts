@@ -135,6 +135,28 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+function findReservationUrl(documents: any[]): string | undefined {
+  const reservationUrlPattern = /^\s*예약 홈페이지\s*:\s*(https?:\/\/[^\s<>"']+)/gim;
+
+  for (const document of documents) {
+    const content = typeof document?.content === 'string' ? document.content : '';
+    reservationUrlPattern.lastIndex = 0;
+
+    let match: RegExpExecArray | null;
+    while ((match = reservationUrlPattern.exec(content)) !== null) {
+      const candidate = match[1].replace(/[.,;!?)\]}]+$/, '');
+      try {
+        const url = new URL(candidate);
+        if (url.protocol === 'http:' || url.protocol === 'https:') return candidate;
+      } catch {
+        // 형식이 잘못된 URL은 건너뛰고 다음 검색 결과를 확인한다.
+      }
+    }
+  }
+
+  return undefined;
+}
+
 serve(async (req) => {
   // 1. 카카오톡에서 보낸 데이터 파싱
   //    본문이 비어 있는 요청(헬스체크·크롤러·GET 등)은 여기서 걸러낸다.
@@ -296,10 +318,30 @@ serve(async (req) => {
       ]);
       const rawIntent = intentRes.choices[0].message.content?.trim().toLowerCase() ?? '';
       const intent = ['chitchat', 'transport', 'event', 'tour', 'facility', 'timely', 'general'].includes(rawIntent) ? rawIntent : 'general';
+      const isReservationQuestion = /예약|예매/.test(userMessage);
+      const normalizeReservationSearchTerm = (text: string) => text
+        .replace(/예매/g, '예약')
+        .replace(/([가-힣]{2,})(?:을|를|은|는)(?=\s|$)/g, '$1');
+      if (isReservationQuestion) {
+        searchQuery = normalizeReservationSearchTerm(searchQuery);
+      }
 
       // 답변 저장 + 카카오 콜백 전송 (모든 분기 공통) — 전송 직전 유출 가드 통과
-      const finish = async (rawAnswer: string) => {
+      const finish = async (rawAnswer: string, reservationUrl?: string) => {
         const answer = guardPromptLeak(rawAnswer);
+        const outputs: any[] = [{ simpleText: { text: answer } }];
+        if (reservationUrl) {
+          outputs.push({
+            textCard: {
+              description: '아래 버튼을 눌러 예약 홈페이지로 이동하세요.',
+              buttons: [{
+                action: 'webLink',
+                label: '예약하기',
+                webLinkUrl: reservationUrl,
+              }],
+            },
+          });
+        }
         await supabase.from('conversations').insert([
           { user_id: userId, role: 'user', content: userMessage },
           { user_id: userId, role: 'assistant', content: answer },
@@ -310,7 +352,7 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               version: "2.0",
-              template: { outputs: [{ simpleText: { text: answer } }] }
+              template: { outputs }
             })
           });
           console.log("콜백 전송 결과:", cbRes.status, await cbRes.text());
@@ -416,6 +458,12 @@ serve(async (req) => {
           .filter((w: string) => w.length >= 2)
           .sort((a: string, b: string) => b.length - a.length)
           .slice(0, 2);
+      }
+      if (isReservationQuestion) {
+        keywords = [...new Set([
+          ...keywords.map(normalizeReservationSearchTerm).map((k) => k.includes('예약') ? '예약' : k),
+          '예약',
+        ])].slice(0, 4);
       }
 
       const queryEmbedding: number[] | null = embedRes?.data?.[0]?.embedding ?? null;
@@ -622,6 +670,10 @@ serve(async (req) => {
         })
         .flat();
 
+      const reservationUrl = isReservationQuestion
+        ? findReservationUrl(documents)
+        : undefined;
+
       // 문서별 원문 URL을 자료에 노출 → 예약/신청 안내 시 링크 제공 가능 (문서당 1회)
       const seenUrl = new Set<string>();
       const docsContext = documents.map((d: any) => {
@@ -699,7 +751,7 @@ ${contextText}`,
       const answer = stripMarkdown(completion.choices[0].message.content ?? "");
 
       // [C-2]+[D] 대화 저장 후 카카오톡 콜백 URL로 최종 답변 전송
-      await finish(answer);
+      await finish(answer, reservationUrl);
 
     } catch (error) {
       console.error("백그라운드 에러:", error);
