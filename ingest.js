@@ -1,22 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { restructureTables } from './table_utils.js';
+import { embedBatch, pace, EMBED_BATCH_SIZE } from './embed_utils.js';
 
 // .env 파일 로드
 dotenv.config();
 
 // 1. Supabase / 임베딩 클라이언트 초기화
 // RLS(보안)를 우회하기 위해 반드시 SERVICE_ROLE_KEY를 사용해야 합니다.
-// 임베딩: LLM 게이트웨이(factchat)에는 임베딩 API가 없어 전용 OpenAI 키(OPENAI_API_KEY_2) 사용.
-//   text-embedding-3-small, 1536차원 (기존 vector(1536) 스키마와 일치, 정규화된 벡터 반환)
+// 임베딩: Gemini gemini-embedding-001 (embed_utils.js 참고 — 1536차원, 무료 티어 분당 한도로 배치 50개/분)
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-const embedClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_2 });
 
 // ─────────────────────────────────────────────
 // 설정
@@ -25,7 +22,7 @@ const SOURCE_FILE = 'documents.jsonl';
 // true면 적재 전에 documents 테이블을 비웁니다.
 const RESET_TABLE = true;
 // 임베딩 API 한 번에 보낼 청크 수
-const BATCH_SIZE = 100;
+const BATCH_SIZE = EMBED_BATCH_SIZE;
 // board 공지 보관 컷: 이 날짜 이전 게시물은 적재하지 않음 (날짜 없는 board·facility·page는 항상 유지)
 const BOARD_DATE_CUTOFF = '2025-01-01';
 // true면 DB에 쓰지 않고 파싱/청크 통계와 샘플만 출력 (임베딩 비용 0)
@@ -33,7 +30,7 @@ const DRY_RUN = process.env.DRY_RUN === 'true';
 // 중단된 적재 이어하기: RESUME_FROM=<청크 인덱스>면 테이블을 비우지 않고 그 지점부터 적재
 // (진행 로그의 "진행: X/전체"에서 X를 넣으면 됨)
 const RESUME_FROM = parseInt(process.env.RESUME_FROM ?? '0', 10) || 0;
-// SKIP_EMBED=true면 임베딩 없이 본문만 적재 (Gemini 무료 티어 일 1,000건 한도 소진 시 사용)
+// SKIP_EMBED=true면 임베딩 없이 본문만 적재 (Gemini 무료 티어 한도 때문에 전체 적재가 오래 걸릴 때 사용)
 // → 키워드 검색은 즉시 동작하고, 임베딩은 embed_backfill.js로 나중에 채운다
 const SKIP_EMBED = process.env.SKIP_EMBED === 'true';
 // 이 길이를 넘는 문서는 대장류 데이터 덤프(연도별 "정보목록" = 내부 공문 제목 목록 등)로 간주하고 스킵.
@@ -105,24 +102,6 @@ function normalizeTables(content) {
     return `| ${cells.join(' | ')} |`;
   });
   return restructureTables(wrapped.join('\n'));
-}
-
-/** 임베딩 배치 호출 (429 등 일시 오류 대비 재시도 + 백오프) */
-async function embedBatch(inputs) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const res = await embedClient.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: inputs,
-      });
-      return res.data.map((d) => d.embedding); // 각 1536차원, 정규화됨
-    } catch (err) {
-      if (attempt >= 5) throw err;
-      const wait = attempt * 10000;
-      console.warn(`⚠️ 임베딩 실패(${(err.message ?? '').slice(0, 120)}) — ${wait / 1000}초 후 재시도 (${attempt}/5)`);
-      await new Promise((r) => setTimeout(r, wait));
-    }
-  }
 }
 
 /** 다양한 표기의 날짜를 "YYYY-MM-DD"로 정규화. 해석 불가하면 null */
@@ -256,8 +235,8 @@ async function processAndIngest() {
         `✅ 진행: ${Math.min(start + BATCH_SIZE, items.length)}/${items.length} (성공 ${successCount})`
       );
 
-      // DB 부하 방지
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // 임베딩 분당 한도 준수 (임베딩 생략 시엔 DB 부하 방지용 짧은 대기)
+      await (SKIP_EMBED ? new Promise((resolve) => setTimeout(resolve, 50)) : pace());
     }
 
     console.log(

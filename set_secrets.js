@@ -1,5 +1,5 @@
 // Supabase Edge Function 시크릿 일괄 등록 스크립트
-// .env의 값(OPENAI_API_KEY, base_url, OPENAI_API_KEY_2, TOUR_API_KEY)을 읽어
+// .env의 값(OPENAI_API_KEY, base_url, GEMINI_API_KEY, TOUR_API_KEY)을 읽어
 // SUPABASE_URL에서 자동 추출한 project ref에 등록한다. (SUPABASE_* 3종은 자동 주입이라 제외)
 // 실행: node set_secrets.js
 import { spawnSync } from "child_process";
@@ -23,7 +23,7 @@ if (!ref) {
 const secrets = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY, // factchat 게이트웨이 (채팅)
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? process.env.base_url,
-  OPENAI_API_KEY_2: process.env.OPENAI_API_KEY_2, // 임베딩 전용 OpenAI 키
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY, // 임베딩 전용 (gemini-embedding-001)
   TOUR_API_KEY: process.env.TOUR_API_KEY, // data.go.kr (TourAPI + TAGO 공용)
 };
 const missing = Object.entries(secrets)

@@ -1,9 +1,10 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
+import { embedBatch, EMBED_MODEL } from './embed_utils.js';
 
 dotenv.config({ quiet: true });
 
-const { OPENAI_API_KEY, OPENAI_API_KEY_2, base_url } = process.env;
+const { OPENAI_API_KEY, GEMINI_API_KEY, base_url } = process.env;
 const baseURL = process.env.OPENAI_BASE_URL || base_url;
 // 테스트할 모델명을 인자로 받는다: node check_gateway.js <model>
 const MODEL = process.argv[2] || 'gpt-5.5';
@@ -18,7 +19,7 @@ async function checkGateway() {
   console.log('=== 환경변수 확인 ===');
   console.log(`${OPENAI_API_KEY ? '✅' : '❌'} OPENAI_API_KEY: ${OPENAI_API_KEY ? '설정됨' : '없음'}`);
   console.log(`${baseURL ? '✅' : '❌'} base_url: ${baseURL || '없음'}`);
-  console.log(`${OPENAI_API_KEY_2 ? '✅' : '⚠️ '} OPENAI_API_KEY_2 (임베딩용): ${OPENAI_API_KEY_2 ? '설정됨' : '없음'}`);
+  console.log(`${GEMINI_API_KEY ? '✅' : '⚠️ '} GEMINI_API_KEY (임베딩용): ${GEMINI_API_KEY ? '설정됨' : '없음'}`);
 
   if (!OPENAI_API_KEY || !baseURL) {
     console.error('\n❌ OPENAI_API_KEY 또는 base_url이 없습니다. .env를 확인하세요.');
@@ -67,18 +68,14 @@ async function checkGateway() {
     console.error('\n   → API 키가 만료/무효이거나 base_url이 잘못됐을 가능성이 높습니다.');
   }
 
-  // 2. 참고용: 임베딩 키(OPENAI_API_KEY_2, 순정 OpenAI)는 이 게이트웨이와 무관하므로 별도 확인
-  if (OPENAI_API_KEY_2) {
-    console.log('\n=== (참고) 임베딩 전용 키 확인 (OPENAI_API_KEY_2) ===');
-    const embedClient = new OpenAI({ apiKey: OPENAI_API_KEY_2 });
+  // 2. 참고용: 임베딩 키(GEMINI_API_KEY)는 이 게이트웨이와 무관하므로 별도 확인
+  if (GEMINI_API_KEY) {
+    console.log(`\n=== (참고) 임베딩 전용 키 확인 (GEMINI_API_KEY, ${EMBED_MODEL}) ===`);
     try {
-      const eres = await embedClient.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: 'ping',
-      });
-      console.log(`✅ 정상 (벡터 차원: ${eres.data[0].embedding.length})`);
+      const [vec] = await embedBatch(['ping'], 'RETRIEVAL_QUERY');
+      console.log(`✅ 정상 (벡터 차원: ${vec.length})`);
     } catch (err) {
-      console.error(`❌ 호출 실패: HTTP ${err.status ?? '?'} - ${err.message}`);
+      console.error(`❌ 호출 실패: ${err.message}`);
     }
   }
 }

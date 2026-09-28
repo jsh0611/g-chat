@@ -71,19 +71,20 @@ flowchart TD
 - **표 정규화**: 크롤러가 받아온 마크다운 표는 병합 셀(rowspan/colspan)이 풀려 행이 쪼개지거나, 열 방향 표(구분 + 속성)가 그대로 들어오는 경우가 많아 LLM이 잘 읽지 못했습니다. 표 형태를 감지해 "- 프로그램명: 요가 주간 | 시간: 10:00" 같은 레코드 문장으로 변환하는 전처리를 거칩니다.
 - **청크 분할**: 500자 단위로 자르되 줄 중간에서 끊지 않아 표에서 변환된 레코드 한 줄이 반토막 나지 않게 합니다.
 - **제목/게시일 헤더 삽입**: 각 청크를 임베딩하기 전에 문서 제목과 게시일을 헤더로 붙여, 제목 기반 검색 정확도를 높이고 재랭킹 단계에서 LLM이 게시 시점을 판단할 수 있게 합니다.
-- **재실행 가능한 적재**: 임베딩 API 호출은 배치·재시도·지수 백오프로 처리하고, 중단 시 마지막 처리 지점부터 이어받을 수 있습니다(`RESUME_FROM`). 임베딩만 별도로 채우는 백필 스크립트(`embed_backfill.js`)도 분리해 뒀습니다.
+- **재실행 가능한 적재**: 임베딩 API 호출은 배치·재시도·백오프로 처리하고 무료 티어 분당 한도에 맞춰 배치 사이를 쉬며, 중단 시 마지막 처리 지점부터 이어받을 수 있습니다(`RESUME_FROM`). 임베딩만 별도로 채우는 백필 스크립트(`embed_backfill.js`)도 분리해 뒀습니다.
 - **관광 데이터**: 한국관광공사 TourAPI에서 동해시 관광지·문화시설·레포츠·숙박·음식점 POI를 지역 코드로 조회해 적재하며, 재실행 시 기존 `tour` 문서를 지우고 다시 채우는 멱등 방식입니다.
 
 ## Reliability & Safety
 
 - **프롬프트 유출 방어**: 시스템 프롬프트 자체에 유출 거부 규칙을 넣는 것과 별개로, 답변을 카카오로 보내기 직전 프롬프트 특유의 문구가 응답에 섞여 있는지 한 번 더 검사해 걸러내는 2차 안전망을 둡니다.
-- **근거 없는 응답 억제**: 시스템 프롬프트에서 자료에 없는 정보는 지어내지 말고 담당 기관 문의를 안내하도록 명시합니다.
+- **근거 없는 응답 억제**: 시스템 프롬프트에서 자료에 없는 정보는 지어내지 말고 확인되지 않는다고 밝히도록 명시합니다.
+- **문의처 오안내 방지**: 게시글의 "작성자(게시 부서)" 표기는 문맥에서 제거하고, 부서조직도(직원별 업무·내선번호) 페이지는 부서·담당자를 직접 물을 때만 검색 후보에 넣습니다. 문의처가 필요할 때는 공식 시설안내전화 목록에서 해당 시설 번호만 안내하며, 답할 수 있는 질문을 "○○팀에 문의하세요"로 넘기지 않습니다.
 - **교통 슬롯 미확정 시 추측 금지**: 출발지·도착지 중 하나라도 대화에서 확인되지 않으면 임의로 추정하지 않고 되묻습니다.
 - **링크 무결성**: 예약 링크와 시설 안내 페이지 링크를 구분해서 제공하며, 크롤러가 놓친 실제 예약 사이트 주소는 원본 페이지를 재조회해 별도로 보강합니다(`patch_reserve_links.js`).
 
 ## Operations
 
-- **가용성 유지**: Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 자동으로 일시정지합니다. GitHub Actions로 3일마다 가벼운 헬스체크 요청을 보내 이를 방지합니다(`.github/workflows/keep-alive.yml`).
+- **가용성 유지**: Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 자동으로 일시정지합니다. GitHub Actions로 매일 하트비트(대화 테이블 INSERT→즉시 DELETE)를 보내 이를 방지합니다 — 읽기 전용 조회만으로는 활동으로 인정되지 않아 정지된 적이 있습니다(`.github/workflows/keep-alive.yml`).
 - **데이터 갱신**: 공지·게시글은 매주, 관광 POI는 분기마다 `refresh_data.ps1`로 갱신합니다. 크롤링 원본에 개인정보가 섞여 있어 GitHub Actions 같은 외부 CI는 쓰지 않고, 로컬(또는 개인 서버)에서 Windows 작업 스케줄러로 실행합니다 — 스크립트 상단 주석에 등록 명령이 있습니다.
 
 ## Tech Stack
@@ -93,7 +94,7 @@ flowchart TD
 | 실행 환경 | Supabase Edge Functions (Deno) |
 | 저장소 | Supabase Postgres + `pgvector`, 대화 기록 테이블 |
 | LLM | OpenAI 호환 게이트웨이 (답변 생성·재랭킹·의도 분류·질문 재작성) |
-| 임베딩 | OpenAI `text-embedding-3-small` (1536차원) |
+| 임베딩 | Google Gemini `gemini-embedding-001` (1536차원으로 축소, 질문·문서 검색용 태스크 타입 구분) |
 | 외부 API | 국토교통부 TAGO(고속버스·열차), 한국관광공사 TourAPI(관광 POI·축제) |
 | 채널 연동 | 카카오 i 오픈빌더 (스킬 서버 + 콜백) |
 | 데이터 수집 | Python (`requests`, `beautifulsoup4`, `pdfplumber`, Tesseract OCR) |
@@ -118,7 +119,8 @@ ingest.js                               # documents.jsonl → 표 정규화 → 
 ingest_tour.js                          # TourAPI 관광 POI 적재
 table_utils.js                          # 마크다운 표 → 레코드 문장 변환
 patch_reserve_links.js                  # 원본 페이지에서 예약 링크 재조회·주입
-embed_backfill.js                       # 임베딩 누락분 백필
+embed_utils.js                          # Gemini 임베딩 공용 모듈 (배치·재시도·분당 한도 대기)
+embed_backfill.js                       # 임베딩 누락분 백필 (모델 교체 시 REEMBED_ALL=true로 전체 재임베딩)
 check_db.js / check_supabase.js         # 적재 결과 / DB 연결·RLS 검증
 check_gateway.js                        # LLM 게이트웨이(키·모델) 헬스체크
 check_conv.mjs                          # 최근 대화 로그 조회
@@ -132,7 +134,7 @@ refresh_data.ps1                        # 크롤링→적재 전체 갱신 오�
 
 ```bash
 npm install
-cp .env.example .env   # Supabase 키, LLM 게이트웨이 키, 임베딩용 OpenAI 키, TAGO/TourAPI 키 입력
+cp .env.example .env   # Supabase 키, LLM 게이트웨이 키, 임베딩용 Gemini 키, TAGO/TourAPI 키 입력
 ```
 
 ```bash
