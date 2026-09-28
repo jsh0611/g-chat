@@ -1,28 +1,42 @@
 name: Keep Supabase Alive
 
-# Supabase 무료 플랜은 일정 기간(약 1주일) DB 요청이 없으면 프로젝트를 자동 일시정지합니다.
-# 이를 막기 위해 며칠에 한 번씩 가벼운 조회를 보내 활동을 기록합니다.
+# Supabase 무료 플랜은 7일간 활동이 없으면 프로젝트를 자동 일시정지합니다.
+# ⚠️ 읽기 핑(documents limit 1 조회)만으로는 활동으로 인정되지 않았다 — 9/22·9/25 핑이
+#    모두 200이었는데도 9/26에 정지됨. 그래서 실제 DB 쓰기(INSERT → 즉시 DELETE)를 발생시킨다.
+#    하트비트 행은 user_id='keep-alive'라 봇의 대화 이력 조회(user_id별)에 섞이지 않는다.
 on:
   schedule:
-    - cron: '0 3 */3 * *' # UTC 03:00, 3일마다
+    - cron: '0 3 * * *' # UTC 03:00(KST 12:00), 매일 — 한두 번 실패해도 7일 안에 여유 있게
   workflow_dispatch: {}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase (documents 테이블 count 조회)
+      - name: Heartbeat (conversations INSERT → DELETE + documents 조회)
         run: |
-          status=$(curl -s -o /tmp/resp.txt -w "%{http_code}" \
-            "${SUPABASE_URL}/rest/v1/documents?select=id&limit=1" \
-            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
-          echo "HTTP status: $status"
+          H=(-H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+             -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+             -H "Content-Type: application/json")
+          check() {
+            echo "$1 HTTP $2"
+            if [ "$2" -ge 400 ] || [ "$2" -eq 000 ]; then
+              cat /tmp/resp.txt
+              echo "::error::Supabase $1 failed with status $2 (프로젝트 일시정지 여부를 대시보드에서 확인)"
+              exit 1
+            fi
+          }
+          s=$(curl -s -o /tmp/resp.txt -w "%{http_code}" -X POST \
+            "${SUPABASE_URL}/rest/v1/conversations" "${H[@]}" -H "Prefer: return=minimal" \
+            -d '{"user_id":"keep-alive","role":"user","content":"ping"}')
+          check INSERT "$s"
+          s=$(curl -s -o /tmp/resp.txt -w "%{http_code}" -X DELETE \
+            "${SUPABASE_URL}/rest/v1/conversations?user_id=eq.keep-alive" "${H[@]}")
+          check DELETE "$s"
+          s=$(curl -s -o /tmp/resp.txt -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/documents?select=id&limit=1" "${H[@]}")
+          check SELECT "$s"
           cat /tmp/resp.txt
-          if [ "$status" -ge 400 ]; then
-            echo "::error::Supabase ping failed with status $status"
-            exit 1
-          fi
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
