@@ -32,6 +32,19 @@ function extractReserveLinks(html, baseUrl) {
   return links;
 }
 
+/** 앵커 라벨을 "…예약 홈페이지" 형태로 정규화한다.
+ *   "예약 바로가기"        → "예약 홈페이지"
+ *   "수학여행예약 바로가기" → "수학여행 예약 홈페이지"
+ *  범위가 한정된 예약처(천곡황금박쥐동굴은 대관·단체 예약 폼)는 그 수식어를 반드시 남긴다.
+ *  일반 입장 예약처럼 안내되면 방문객이 오해하기 때문. 반대로 봇 프롬프트가 "예약 홈페이지: URL"
+ *  문자열을 기준으로 링크를 고르므로, 어떤 라벨이든 "예약 홈페이지"로 끝나야 한다.
+ */
+function reserveLabel(rawLabel) {
+  const base = rawLabel.replace(/\s*바로가기\s*$/, '').trim();
+  const qualifier = base.replace(/예약\s*$/, '').trim();   // 끝의 "예약"을 떼어 수식어만 남김
+  return qualifier ? `${qualifier} 예약 홈페이지` : '예약 홈페이지';
+}
+
 async function main() {
   // 시설 문서 목록 (doc_id별 대표 URL)
   const { data: heads, error } = await supabase
@@ -67,9 +80,7 @@ async function main() {
     for (const c of chunks) {
       // 이전 실행이 주입한 줄을 걷어내고 다시 주입 (재실행·링크 변경에 안전)
       const base = c.content.split('\n').filter((ln) => !/^\S.* 홈페이지: https?:\/\//.test(ln)).join('\n');
-      const lines = links.map((l) =>
-        l.label === '예약 바로가기' ? `예약 홈페이지: ${l.href}` : `${l.label.replace(/\s*바로가기$/, '')} 홈페이지: ${l.href}`
-      );
+      const lines = links.map((l) => `${reserveLabel(l.label)}: ${l.href}`);
       const next = `${base}\n${lines.join('\n')}`;
       if (next === c.content) { skipped++; continue; } // 이미 최신 상태
       const { error: upErr } = await supabase

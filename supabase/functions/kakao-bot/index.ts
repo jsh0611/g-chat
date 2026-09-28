@@ -444,7 +444,19 @@ serve(async (req) => {
             .select('id, content, metadata')
             .ilike('content', `%${k}%`)
             .filter('metadata->>doc_type', 'in', '(facility,page,tour)')
+            .order('id', { ascending: true })   // 정렬 없으면 limit이 임의로 잘려 재현 불가
             .limit(50),
+          // 시설 안내 문서 전용 쿼리 — page 문서가 1368청크(공단 홈페이지 메뉴 덤프 등)로
+          // 위 limit(50)을 잠식해, 정작 질문 대상 시설의 facility 청크(전체 94개)가 후보에서
+          // 통째로 밀려나는 일이 있었다. 예약 URL은 facility 청크에만 주입되므로(12청크)
+          // 밀리면 링크를 못 준다 → facility 만 따로 조회해 후보 진입을 보장한다.
+          supabase
+            .from('documents')
+            .select('id, content, metadata')
+            .ilike('content', `%${k}%`)
+            .eq('metadata->>doc_type', 'facility')
+            .order('id', { ascending: true })
+            .limit(30),
         ]),
       ]);
 
@@ -555,21 +567,40 @@ serve(async (req) => {
       }
       console.log(`검색질문: ${searchQuery}, 의도: ${intent}, 키워드: ${keywords.join(',')}, 상위 문서: ${documents.map((d: any) => d.metadata?.title).join(' / ')}`);
 
-      // [B-3] 상위 4개 문서는 전체 청크를 문맥에 포함: 정답(신청일·링크 등)이 키워드에
+      // [B-3] 상위 4개 문서의 형제 청크를 문맥에 포함: 정답(신청일·링크 등)이 키워드에
       // 안 걸린 형제 청크에 있는 경우가 많다. (id 오름차순 = 적재 순서 = 원문 순서)
+      // 단, 문서당 배정량(quota)을 두어 청크 많은 문서가 문맥을 독식하지 못하게 한다.
       const expandIds = [...new Set(
         documents.map((d: any) => String(d.metadata?.doc_id ?? '')).filter(Boolean)
       )].slice(0, 4);
       if (expandIds.length > 0) {
-        const { data: sibs } = await supabase
-          .from('documents')
-          .select('id, content, metadata')
-          .in('metadata->>doc_id', expandIds)
-          .order('id', { ascending: true })
-          .limit(48);
-        if (sibs && sibs.length > 0) {
+        // 문서당 배정량(quota)을 두어 청크 많은 문서 하나가 문맥을 독식하지 못하게 한다.
+        // (공단 홈페이지 page 문서 36청크가 48칸 중 33칸을 먹어, 정작 질문 대상 시설 문서의
+        //  청크가 문맥에서 통째로 빠지는 사례가 있었다)
+        // 문서별로 따로 조회한다 — in() 하나에 limit 을 걸면 id가 앞선 문서가 조회 결과를
+        // 다 채워버려 나머지 문서는 형제 청크도 매칭 청크도 못 얻는다.
+        const quota = Math.max(1, Math.floor(64 / expandIds.length));
+        const matchedIds = new Set(documents.map((d: any) => d.id));
+        const sibGroups = await Promise.all(expandIds.map((docId) =>
+          supabase
+            .from('documents')
+            .select('id, content, metadata')
+            .eq('metadata->>doc_id', docId)
+            .order('id', { ascending: true })
+            .limit(64)
+            .then((r: any) => r.data ?? [])
+        ));
+        // 검색에 실제로 걸린 청크는 배정량과 무관하게 반드시 남긴다 — 정답이 그 청크에 있는데
+        // 형제 청크로 교체되면서 잘려나가면 안 된다(청크 60개짜리 긴 공고 등). 남은 배정량만
+        // 앞쪽 형제 청크로 채우고, 문서 내부 순서는 원문 순서(id)로 되돌린다.
+        const capped = sibGroups.flatMap((g: any[]) => {
+          const must = g.filter((d) => matchedIds.has(d.id));
+          const fill = g.filter((d) => !matchedIds.has(d.id)).slice(0, Math.max(0, quota - must.length));
+          return [...must, ...fill].sort((a, b) => a.id - b.id);
+        });
+        if (capped.length > 0) {
           const rest = documents.filter((d: any) => !expandIds.includes(String(d.metadata?.doc_id)));
-          documents = [...sibs, ...rest];
+          documents = [...capped, ...rest];
         }
       }
 
