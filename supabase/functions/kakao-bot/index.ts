@@ -166,37 +166,17 @@ function stripMarkdown(text: string): string {
   return text
     .replace(/^#{1,6}\s+/gm, "")            // # 제목
     .replace(/\*\*(.+?)\*\*/g, "$1")        // **굵게**
-    .replace(/__(.+?)__/g, "$1")            // __굵게__
+    // 밑줄 강조는 단어 경계에서만 — URL 속 "nav_code=...&mv_data"의 밑줄이 기울임으로 오인돼
+    // 지워지면서(navcode·mvdata) 공단 홈페이지 링크가 깨지던 문제
+    .replace(/(?<!\w)__(.+?)__(?!\w)/g, "$1") // __굵게__
     .replace(/\*(.+?)\*/g, "$1")            // *기울임*
-    .replace(/_(.+?)_/g, "$1")              // _기울임_
+    .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "$1") // _기울임_
     .replace(/`([^`]+)`/g, "$1")            // `코드`
     .replace(/```[\s\S]*?```/g, (m) => m.replace(/```[a-z]*\n?/gi, "")) // ```코드블록```
     .replace(/^\s*[-*+]\s+/gm, "• ")        // - 목록 → •
     .replace(/\[(.+?)\]\((.+?)\)/g, "$1 ($2)") // [텍스트](링크)
     .replace(/^\s*>\s+/gm, "")              // > 인용
     .trim();
-}
-
-function findReservationUrl(documents: any[]): string | undefined {
-  const reservationUrlPattern = /^\s*예약 홈페이지\s*:\s*(https?:\/\/[^\s<>"']+)/gim;
-
-  for (const document of documents) {
-    const content = typeof document?.content === 'string' ? document.content : '';
-    reservationUrlPattern.lastIndex = 0;
-
-    let match: RegExpExecArray | null;
-    while ((match = reservationUrlPattern.exec(content)) !== null) {
-      const candidate = match[1].replace(/[.,;!?)\]}]+$/, '');
-      try {
-        const url = new URL(candidate);
-        if (url.protocol === 'http:' || url.protocol === 'https:') return candidate;
-      } catch {
-        // 형식이 잘못된 URL은 건너뛰고 다음 검색 결과를 확인한다.
-      }
-    }
-  }
-
-  return undefined;
 }
 
 serve(async (req) => {
@@ -359,6 +339,8 @@ serve(async (req) => {
       ]);
       const rawIntent = intentRes.choices[0].message.content?.trim().toLowerCase() ?? '';
       const intent = ['chitchat', 'transport', 'event', 'tour', 'facility', 'timely', 'general'].includes(rawIntent) ? rawIntent : 'general';
+      // 예약 질문은 "예매"→"예약" 통일 + '예약' 키워드를 추가해, 예약 링크("예약 홈페이지: URL")가
+      // 주입된 시설 청크가 검색되도록 한다. (링크는 답변 텍스트로 안내 — 별도 버튼 카드는 중복이라 제거)
       const isReservationQuestion = /예약|예매/.test(userMessage);
       const normalizeReservationSearchTerm = (text: string) => text
         .replace(/예매/g, '예약')
@@ -368,21 +350,8 @@ serve(async (req) => {
       }
 
       // 답변 저장 + 카카오 콜백 전송 (모든 분기 공통) — 전송 직전 유출 가드 통과
-      const finish = async (rawAnswer: string, reservationUrl?: string) => {
+      const finish = async (rawAnswer: string) => {
         const answer = guardPromptLeak(rawAnswer);
-        const outputs: any[] = [{ simpleText: { text: answer } }];
-        if (reservationUrl) {
-          outputs.push({
-            textCard: {
-              description: '아래 버튼을 눌러 예약 홈페이지로 이동하세요.',
-              buttons: [{
-                action: 'webLink',
-                label: '예약하기',
-                webLinkUrl: reservationUrl,
-              }],
-            },
-          });
-        }
         await supabase.from('conversations').insert([
           { user_id: userId, role: 'user', content: userMessage },
           { user_id: userId, role: 'assistant', content: answer },
@@ -393,7 +362,7 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               version: "2.0",
-              template: { outputs }
+              template: { outputs: [{ simpleText: { text: answer } }] }
             })
           });
           console.log("콜백 전송 결과:", cbRes.status, await cbRes.text());
@@ -731,10 +700,6 @@ serve(async (req) => {
         })
         .flat();
 
-      const reservationUrl = isReservationQuestion
-        ? findReservationUrl(documents)
-        : undefined;
-
       // 문서별 원문 URL을 자료에 노출 → 예약/신청 안내 시 링크 제공 가능 (문서당 1회)
       const seenUrl = new Set<string>();
       const docsContext = documents.map((d: any) => {
@@ -825,7 +790,7 @@ ${contextText}${contactBlock}`,
       const answer = stripMarkdown(completion.choices[0].message.content ?? "");
 
       // [C-2]+[D] 대화 저장 후 카카오톡 콜백 URL로 최종 답변 전송
-      await finish(answer, reservationUrl);
+      await finish(answer);
 
     } catch (error) {
       console.error("백그라운드 에러:", error);
