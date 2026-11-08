@@ -12,6 +12,11 @@
   python main.py ocr-new               # OCR 결과 없는 문서의 이미지만 OCR → 병합 (pytesseract 필요)
   ※ preprocess 뒤에는 항상 OCR 병합(preprocessor/merge_ocr.py, 고정 키 매칭)이 자동 실행된다
 
+  [두 번째 출처: 동해시 관광지 통합예약시스템 campingkorea.or.kr — 허용 목록 수집]
+  python main.py camping               # 수집 → 구조화 → 전처리 (documents_camping.jsonl)
+  python main.py camping-crawl         # 수집만 (증분, --reset / --no-download 동일하게 사용)
+  python main.py camping-parse         # 구조화만
+  python main.py camping-preprocess    # 전처리만
 """
 
 import sys
@@ -29,6 +34,9 @@ from crawler.crawler import run_crawl
 from parser.parser import run_parse
 from preprocessor.preprocessor import run_preprocess
 from preprocessor.merge_ocr import run_merge
+from crawler.camping import run_crawl_camping
+from parser.camping import run_parse_camping
+from preprocessor.camping import run_preprocess_camping
 
 
 def main(argv):
@@ -50,8 +58,15 @@ def main(argv):
         run_ocr_missing()
         run_merge()
 
+    if stage in ("camping", "camping-crawl"):
+        run_crawl_camping(download=download, full_reset=full_reset)
+    if stage in ("camping", "camping-parse"):
+        run_parse_camping()
+    if stage in ("camping", "camping-preprocess"):
+        run_preprocess_camping()
 
-    if stage not in ("all", "crawl", "parse", "preprocess", "ocr-new"):
+    if stage not in ("all", "crawl", "parse", "preprocess", "ocr-new",
+                     "camping", "camping-crawl", "camping-parse", "camping-preprocess"):
         print(__doc__)
 
 
