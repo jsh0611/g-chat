@@ -7,7 +7,7 @@
 //
 // ⚠️ ingest.js로 재적재하면 주입이 사라지므로, 재적재 후 이 스크립트를 다시 실행할 것.
 //    (청크 본문만 수정하고 임베딩은 그대로 둠 — URL 몇 글자는 검색 의미에 영향 없음)
-// 실행: node patch_reserve_links.js
+// 실행: node scripts/patch_reserve_links.js
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
@@ -56,7 +56,10 @@ async function main() {
 
   let patched = 0, skipped = 0, noLink = 0;
   for (const h of heads ?? []) {
-    const { doc_id: docId, title, url } = h.metadata;
+    const { doc_id: docId, title, url, source } = h.metadata;
+    // 예약시스템 문서는 ingest_camping.js 가 예약 링크를 이미 넣는다 — 여기서 그 사이트를
+    // 요청 간격 없이 수십 번 다시 받을 이유가 없으므로 건너뛴다.
+    if (source === 'campingkorea') continue;
     if (!url) { noLink++; continue; }
 
     let links = [];

@@ -85,7 +85,7 @@ flowchart TD
 ## Operations
 
 - **가용성 유지**: Supabase 무료 플랜은 일정 기간 API 요청이 없으면 프로젝트를 자동으로 일시정지합니다. GitHub Actions로 매일 하트비트(대화 테이블 INSERT→즉시 DELETE)를 보내 이를 방지합니다 — 읽기 전용 조회만으로는 활동으로 인정되지 않아 정지된 적이 있습니다(`.github/workflows/keep-alive.yml`).
-- **데이터 갱신**: 공지·게시글은 매주, 관광 POI는 분기마다 `refresh_data.ps1`로 갱신합니다. 크롤링 원본에 개인정보가 섞여 있어 GitHub Actions 같은 외부 CI는 쓰지 않고, 로컬(또는 개인 서버)에서 Windows 작업 스케줄러로 실행합니다 — 스크립트 상단 주석에 등록 명령이 있습니다.
+- **데이터 갱신**: 공지·게시글은 매주, 관광 POI는 분기마다 `scripts/refresh_data.ps1`(`npm run refresh`)로 갱신합니다. 크롤링 원본에 개인정보가 섞여 있어 GitHub Actions 같은 외부 CI는 쓰지 않고, 로컬(또는 개인 서버)에서 Windows 작업 스케줄러로 실행합니다 — 스크립트 상단 주석에 등록 명령이 있습니다.
 
 ## Tech Stack
 
@@ -115,18 +115,28 @@ data-pipeline/                          # 크롤링·정제 (Python, 자체 READ
 └── preprocessor/                       #   3단계: 정제 → documents.jsonl (+ 첨부 추출, OCR)
 
 supabase/functions/kakao-bot/index.ts   # 의도 분류·도구 호출·검색·답변 생성을 담당하는 본체
-ingest.js                               # documents.jsonl → 표 정규화 → 청크 → 임베딩 → 적재
-ingest_tour.js                          # TourAPI 관광 POI 적재
-table_utils.js                          # 마크다운 표 → 레코드 문장 변환
-patch_reserve_links.js                  # 원본 페이지에서 예약 링크 재조회·주입
-embed_utils.js                          # Gemini 임베딩 공용 모듈 (배치·재시도·분당 한도 대기)
-embed_backfill.js                       # 임베딩 누락분 백필 (모델 교체 시 REEMBED_ALL=true로 전체 재임베딩)
-check_db.js / check_supabase.js         # 적재 결과 / DB 연결·RLS 검증
-check_gateway.js                        # LLM 게이트웨이(키·모델) 헬스체크
-check_conv.mjs                          # 최근 대화 로그 조회
-set_secrets.js                          # .env → Supabase Edge Function 시크릿 동기화
-refresh_data.ps1                        # 크롤링→적재 전체 갱신 오케스트레이션 (로컬 스케줄러용)
+
+lib/                                    # 공용 모듈 (직접 실행하지 않음)
+├── ingest_utils.js                     #   청크·해시·증분 동기화(syncSource) 공용 로직
+├── table_utils.js                      #   마크다운 표 → 레코드 문장 변환
+└── embed_utils.js                      #   Gemini 임베딩 (배치·재시도·분당 한도·일일 예산)
+
+scripts/                                # 실행 스크립트 — 전부 저장소 루트에서 npm run 으로 실행
+├── refresh_data.ps1                    #   크롤링→적재 전체 갱신 오케스트레이션 (npm run refresh)
+├── ingest.js                           #   documents.jsonl → 표 정규화 → 청크 → 임베딩 → 증분 적재
+├── ingest_camping.js                   #   관광지 통합예약시스템(campingkorea) 문서 증분 적재
+├── ingest_tour.js                      #   TourAPI 관광 POI 적재
+├── patch_reserve_links.js              #   원본 페이지에서 예약 링크 재조회·주입
+├── embed_backfill.js                   #   임베딩 누락분 백필 (모델 교체 시 REEMBED_ALL=true로 전체 재임베딩)
+├── check_db.js / check_supabase.js     #   적재 결과 / DB 연결·RLS 검증
+├── check_gateway.js                    #   LLM 게이트웨이(키·모델) 헬스체크
+├── check_conv.mjs                      #   최근 대화 로그 조회
+└── set_secrets.js                      #   .env → Supabase Edge Function 시크릿 동기화
+
+tests/                                  # 종단 테스트 (내부용, 저장소 제외)
 ```
+
+스크립트는 `documents.jsonl`·`ingest_state.json`·`logs/` 등을 **현재 디렉터리 기준**으로 읽고 쓰므로 반드시 저장소 루트에서 실행합니다(`npm run …`이 이를 보장). 데이터 파일을 루트에 두는 이유는 `documents.jsonl`이라는 이름이 DB 행의 출처 식별자(`metadata.source`)로도 쓰여, 경로를 바꾸면 증분 적재가 기존 행을 다른 출처로 보기 때문입니다.
 
 크롤링 원본 데이터, 실제 발급받은 키, 내부 테스트 스위트는 개인정보·운영 보안 문제로 저장소에서 제외했습니다 (`.gitignore` 참고). 아래 실행 방법은 구조를 재현하기 위한 안내이며, 동작시키려면 각자 데이터와 키가 필요합니다.
 
@@ -140,21 +150,23 @@ cp .env.example .env   # Supabase 키, LLM 게이트웨이 키, 임베딩용 Gem
 ```bash
 # 0. (선택) 원본부터 재수집하려면 — data-pipeline/README.md 참고
 cd data-pipeline && python main.py && cd ..
-cp data-pipeline/data/processed/documents.jsonl .   # ingest.js는 저장소 루트의 documents.jsonl을 읽음
+cp data-pipeline/data/processed/documents.jsonl .   # ingest는 저장소 루트의 documents.jsonl을 읽음
 
 # 1. 데이터 적재
-node ingest.js
-node ingest_tour.js
-node check_db.js
+npm run ingest
+npm run ingest:tour
+npm run check:db
 
 # 2. Edge Function 배포
-node set_secrets.js
+npm run secrets
 npx supabase functions deploy kakao-bot --project-ref <project-ref>
 
 # 3. 상태 점검
-node check_supabase.js
-node check_gateway.js
+npm run check:supabase
+npm run check:gateway
 ```
+
+전체 갱신(크롤링→적재→검증)은 `npm run refresh` 한 번으로 실행됩니다. 등록된 명령 전체는 `package.json`의 `scripts`에 있습니다.
 
 배포된 함수 URL(`https://<project-ref>.supabase.co/functions/v1/kakao-bot`)을 카카오 i 오픈빌더 스킬 서버 주소로 등록하면 연동이 끝납니다.
 

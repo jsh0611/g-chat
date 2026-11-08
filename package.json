@@ -4,7 +4,20 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "refresh": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh_data.ps1",
+    "ingest": "node scripts/ingest.js",
+    "ingest:camping": "node scripts/ingest_camping.js",
+    "ingest:tour": "node scripts/ingest_tour.js",
+    "embed:backfill": "node scripts/embed_backfill.js",
+    "patch:links": "node scripts/patch_reserve_links.js",
+    "check:db": "node scripts/check_db.js",
+    "check:supabase": "node scripts/check_supabase.js",
+    "check:gateway": "node scripts/check_gateway.js",
+    "check:conv": "node scripts/check_conv.mjs",
+    "secrets": "node scripts/set_secrets.js",
+    "test": "node tests/test_feedback.js",
+    "test:camping": "node tests/test_camping.js",
+    "test:triage": "node tests/test_triage.js"
   },
   "keywords": [],
   "author": "",

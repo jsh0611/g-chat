@@ -80,3 +80,29 @@ python main.py preprocess    # 전처리만 (txt/jsonl 재생성)
 - URL은 `sub.htm?nav_code=..&mv_data=<base64>||`. `mv_data`는 쿼리스트링을 base64 인코딩한 값.
 - 게시판 상세(view)는 Referer 검사가 있어 목록 URL을 Referer로 넣어야 함.
 - 본문 컨테이너는 `#sub-content`. (개편 시 parser 셀렉터만 수정)
+
+## 두 번째 출처: 동해시 관광지 통합예약시스템 (campingkorea.or.kr)
+
+캠핑장 취소·환불 규정, 입·퇴실 시간, 예약 방법, 예약 사이트 공지·FAQ 보강용.
+dhsisul 과 달리 **허용 목록 방식**(재귀 X) — `config.py` 의 `CK_*` 목록에 적힌 URL 만 요청한다.
+
+```bash
+python main.py camping             # 수집 → 구조화 → 전처리 → data/processed/documents_camping.jsonl
+python main.py camping-crawl --reset   # 게시판 처음부터 재수집
+```
+
+- 수집 대상: 이용안내 5 · 시설별 안내전화 4 · 캠핑장별 소개/편의/대관/오시는 길 13(시설안내도 제외) ·
+  숙박·캠핑시설 상세 14(메뉴의 코드 조합 전부) · 게시판 1001 공지 / 1002 FAQ / 1010 여행코스
+- 금지(`CK_DENY_PATTERNS`): 로그인·회원가입·온라인예약·예약결제정보, 그 외 게시판 — 모든 요청이 이 검사를 거침
+- 게시글 상세: `BD_selectBbs.do?q_bbsCode=<코드>&q_bbscttSn=<일련번호>` (목록의 `opView('<일련번호>')`)
+- 증분: 첫 실행은 목록을 끝까지, 이후엔 새 글이 없는 목록 쪽에서 멈춤. 원본은 같은 raw.db(`ck_` 키)
+- 이용요금처럼 캠핑장 탭이 있는 페이지는 캠핑장별 문서로 분리. 표는 제자리에 두고 다단 헤더를 합침
+- 모든 문서 `metadata.source = "campingkorea"`. 적재는 저장소 루트의 `npm run ingest:camping`(`scripts/ingest_camping.js`)
+
+## 중복 제거 (두 출처 공통)
+
+```bash
+python dedup.py           # dry-run → data/dedup/dedup_report.md (제거 예정·부분 중복·충돌 표)
+python dedup.py --apply   # 확인 후에만: ../dedup_exclusions.json + ../logs/dedup_applied_*.json
+```
+원본 jsonl 은 수정하지 않는다. 적재 스크립트가 제외 목록의 doc_id 만 건너뛴다(되돌리기 = 항목 삭제 후 재적재).

@@ -1,12 +1,12 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
-import { embedBatch, EMBED_MODEL } from './embed_utils.js';
+import { embedBatch, EMBED_MODEL } from '../lib/embed_utils.js';
 
 dotenv.config({ quiet: true });
 
 const { OPENAI_API_KEY, GEMINI_API_KEY, base_url } = process.env;
 const baseURL = process.env.OPENAI_BASE_URL || base_url;
-// 테스트할 모델명을 인자로 받는다: node check_gateway.js <model>
+// 테스트할 모델명을 인자로 받는다: node scripts/check_gateway.js <model>
 const MODEL = process.argv[2] || 'gpt-5.5';
 
 /**

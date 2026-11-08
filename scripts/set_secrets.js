@@ -1,7 +1,7 @@
 // Supabase Edge Function 시크릿 일괄 등록 스크립트
 // .env의 값(OPENAI_API_KEY, base_url, GEMINI_API_KEY, TOUR_API_KEY)을 읽어
 // SUPABASE_URL에서 자동 추출한 project ref에 등록한다. (SUPABASE_* 3종은 자동 주입이라 제외)
-// 실행: node set_secrets.js
+// 실행: node scripts/set_secrets.js
 import { spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
