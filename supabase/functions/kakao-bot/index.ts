@@ -146,6 +146,10 @@ const ASKS_ORG = /담당자|부서|조직|직원|내선|팀 ?(번호|연락처|�
 const ASKS_INSTRUCTOR = /강사|코치|선생님/;
 const ASKS_JOB = /채용|지원|합격|구인|일자리|모집 ?공고/;
 const NOT_FOR_LESSON = new Set(['채용공고', '자유게시판']);
+// 요금·대관·할인 질문 — 할인·감면 기준은 요금표 페이지가 아니라 예약안내(교류도시 20%)·대관시설(조례 감면 조항)
+// 같은 별도 청크에 있어, 요금만 물으면 검색되지 않아 감면 안내가 빠졌다(2026-11 시범운영 피드백 S-01·S-04·S-06).
+// '할인'이 든 시설 안내 청크는 소수(2026-11 기준 8개)라 키워드로 넣으면 후보 진입이 보장된다.
+const ASKS_FEE = /요금|사용료|이용료|입장료|금액|가격|얼마|대관|할인|감면/;
 
 // 검색 질문 임베딩 — Gemini gemini-embedding-001 (factchat 게이트웨이엔 임베딩 API가 없어 별도 키).
 // 문서는 적재 시 RETRIEVAL_DOCUMENT로 임베딩했으므로(embed_utils.js) 질문은 RETRIEVAL_QUERY로 맞춘다.
@@ -512,6 +516,10 @@ serve(async (req) => {
           '강습',
         ])].slice(0, 4);
       }
+      const asksFee = ASKS_FEE.test(userMessage);
+      if (asksFee && !keywords.some((k) => /할인|감면/.test(k))) {
+        keywords = [...new Set([...keywords.slice(0, 3), '할인'])];
+      }
 
       const queryEmbedding: number[] | null = embedRes;
 
@@ -651,6 +659,7 @@ serve(async (req) => {
 - 단, 질문이 묻는 세부 조건(특정 시간대·요일·반·링크 등)이 최신 공지에 없고 같은 행사의 다른 공지에 있으면, 그 공지도 함께 고르세요.
 - 질문과 주제만 비슷하고 답이 없는 조각은 고르지 마세요.
 - 강사·코치를 찾거나 수강하고 싶다는 질문이면, 해당 시설·종목의 가장 최근 강습(수강생) 모집·신청 공지를 우선 고르세요.
+- 요금·사용료·대관·할인을 묻는 질문이면, 같은 시설의 할인·감면 기준(거주지·교류도시, 단체, 숙박 연계 등)이 담긴 조각도 함께 고르세요.
 - 출력은 JSON 배열 하나만: 예) [3,0,7]`,
               },
               { role: 'user', content: `질문: ${searchQuery}\n\n후보:\n${numbered}` },
@@ -667,6 +676,17 @@ serve(async (req) => {
         } catch (e) {
           console.warn('리랭킹 실패, 휴리스틱 순위 사용:', e);
         }
+      }
+      // 요금 질문인데 고른 조각에 할인·감면이 하나도 없으면, 후보 중 할인 기준이 담긴 최상위 조각 1개를 덧붙인다
+      // (리랭커가 요금표 조각만 5개 고르면 감면 안내가 빠지는 문제 — 2026-11 S-01)
+      // 할인 조각이 휴리스틱 상위 15개에도 못 드는 경우가 있어 전체 후보에서 찾되, 질문의 다른 키워드(시설명 등)가
+      // 함께 들어 있는 조각만 쓴다 (엉뚱한 시설의 할인 기준이 붙지 않도록)
+      if (asksFee && !documents.some((d: any) => /할인|감면/.test(d.content))) {
+        const others = keywords.filter((k) => !/할인|감면/.test(k));
+        const discount = ranked.find((d: any) =>
+          /할인|감면/.test(d.content) && !documents.includes(d) &&
+          others.some((k) => d.content.includes(k) || (d.metadata?.title ?? '').includes(k)));
+        if (discount) documents = [...documents, discount];
       }
       console.log(`검색질문: ${searchQuery}, 의도: ${intent}, 키워드: ${keywords.join(',')}, 상위 문서: ${documents.map((d: any) => d.metadata?.title).join(' / ')}`);
 
