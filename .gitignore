@@ -45,6 +45,11 @@ supabase/.branches/
 # 로컬 전용: 실데이터(개인정보 포함)·테스트·임시 스크립트·내부 가이드
 # 목록·용도는 LOCAL_FILES.md에서 관리
 documents.jsonl
+documents_camping.jsonl
+*.jsonl.bak
+ingest_state.json
+dedup_exclusions.json
+doc_key_aliases.json
 *_tmp.js
 test_*.js
 CLAUDE.md
