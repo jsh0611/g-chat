@@ -27,9 +27,20 @@ _BOILERPLATE = [
 
 def clean_text(text: str) -> str:
     lines = []
-    for ln in text.split("\n"):
-        ln = ln.strip()
+    raw = [ln.strip() for ln in text.split("\n")]
+    skip_next = False
+    for i, ln in enumerate(raw):
+        if skip_next:
+            skip_next = False
+            continue
         if not ln or any(b in ln for b in _BOILERPLATE):
+            continue
+        # 조회수는 다시 받을 때마다 바뀌어, 내용이 그대로인 글도 청크 해시가 달라져 재임베딩된다.
+        # 게시글 머리의 "조회수" 줄과 다음 숫자 줄(또는 한 줄 "조회수 123")을 뺀다. (봇 cleanChunk 도 이미 지우던 값)
+        if ln == "조회수" and i + 1 < len(raw) and re.fullmatch(r"[\d,]+", raw[i + 1]):
+            skip_next = True
+            continue
+        if re.fullmatch(r"조회수\s*:?\s*[\d,]+", ln):
             continue
         lines.append(ln)
     out = "\n".join(lines)

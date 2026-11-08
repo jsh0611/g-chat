@@ -22,6 +22,49 @@ import config as C
 import rawhtml
 
 
+# ── 고정 키 / 안내 링크 ─────────────────────────────────
+# 게시글 URL 의 mv_data 에는 목록 위치(startPage·listNo)와 빈 검색 상태가 들어 있어, 새 글이 올라올 때마다
+# 같은 글의 URL 이 바뀐다 → 증분 비교·중복 제외 목록·OCR 매칭이 어긋난다.
+#   · 문서 고정 키(doc id): 게시글 board-<code>-<idx>, 시설 facility-<idx>, 페이지 page-<정규화 URL md5>
+#   · 안내 링크(metadata.url): 목록 상태를 뺀 정규화 URL — Referer 없이 열리는 것 확인(2026-10, 게시판 4종)
+_LIST_STATE = {"startPage", "listNo", "search_item", "search_order", "order_list",
+               "list_scale", "view_level", "view_cate", "view_cate2"}
+
+
+def _mv_params(url: str) -> dict:
+    m = re.search(r"mv_data=([^&#]+)", url)
+    if not m:
+        return {}
+    from urllib.parse import unquote, parse_qsl
+    raw = unquote(m.group(1)).replace("||", "")
+    try:
+        import base64
+        return dict(parse_qsl(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8"),
+                              keep_blank_values=True))
+    except Exception:
+        return {}
+
+
+def canonical_url(url: str) -> str:
+    """목록 상태(startPage·listNo 등)가 든 sub.htm URL → 그 상태를 뺀 고정 URL. 해당 없으면 그대로."""
+    if "sub.htm" not in url:
+        return url
+    p = _mv_params(url)
+    if not p or not ({"startPage", "listNo"} & p.keys()):
+        return url
+    import base64
+    from urllib.parse import urlencode
+    keep = {k: v for k, v in p.items() if k not in _LIST_STATE}
+    mv = base64.b64encode(urlencode(keep).encode("utf-8")).decode("ascii")
+    head = "mode=view&" if ("mode=view" in url or "idx" in keep) else ""
+    return f"{C.SUB}?{head}mv_data={mv}%7C%7C"   # '|' 대신 %7C — 카카오톡 자동 링크가 | 에서 끊김
+
+
+def page_doc_id(url: str) -> str:
+    import hashlib as _h
+    return "page-" + _h.md5(canonical_url(url).encode("utf-8")).hexdigest()[:10]
+
+
 def _content_root(soup):
     return soup.select_one("#sub-content") or soup.body or soup
 
@@ -86,7 +129,7 @@ def _parse_board(soup, item) -> dict:
         "board": item["board"],
         "title": item.get("title", ""),    # 목록 제목이 가장 신뢰도 높음
         "date": item.get("date", ""),
-        "url": item["url"],
+        "url": canonical_url(item["url"]),      # 안내 링크: 목록 위치를 뺀 고정 URL
         "body": _clean(root),
         "tables": tables,
         "attachments": item.get("attachments", []),
@@ -125,13 +168,12 @@ def _parse_page(soup, item) -> dict:
     else:
         h = root.find(["h1", "h2"])
         title = h.get_text(strip=True) if h else item["url"]
-    import hashlib as _h
     return {
-        "id": "page-" + _h.md5(item["url"].encode("utf-8")).hexdigest()[:10],
+        "id": page_doc_id(item["url"]),          # 고정 키: 목록 위치가 바뀌어도 같은 페이지면 같은 id
         "source_type": "page",
         "kind": item.get("kind", "internal"),
         "title": title,
-        "url": item["url"],
+        "url": canonical_url(item["url"]),
         "body": _clean(root),
         "tables": tables,
         "attachments": item.get("attachments", []),
@@ -153,13 +195,21 @@ def run_parse():
         raise FileNotFoundError("manifest.json 없음 — 먼저 crawler 를 실행하세요.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    docs = []
+    docs, seen, merged = [], set(), 0
     for item in manifest:
         html = rawhtml.load_html(item.get("html_key"))
         if not html:
             print(f"  ! 원본 HTML 없음: {item.get('html_key')} (crawler 재실행 필요)")
             continue
-        docs.append(parse_html(html, item))
+        doc = parse_html(html, item)
+        # 목록 위치만 다른 같은 글/페이지(정규화 후 같은 고정 키)는 하나만 남긴다
+        if doc["id"] in seen:
+            merged += 1
+            continue
+        seen.add(doc["id"])
+        docs.append(doc)
+    if merged:
+        print(f"  ↳ 고정 키가 같은 사본 {merged}건 합침 (목록 위치만 다른 URL)")
 
     C.PARSED_DIR.mkdir(parents=True, exist_ok=True)
     out = C.PARSED_DIR / "documents.json"

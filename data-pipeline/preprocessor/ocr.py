@@ -272,6 +272,62 @@ def run_ocr(do_images=True, do_pdf=True, limit=None):
     return n_ok
 
 
+def run_ocr_missing(cutoff: str = "2025-01-01"):
+    """OCR 결과가 없는 문서(새 글 등)의 이미지·스캔 PDF 첨부만 OCR 해 ocr_by_doc.jsonl 에 추가한다.
+    · 대상 문서: 적재 대상(게시글은 cutoff 이후 게시일, 시설·페이지는 전부) 중 ocr_by_doc.jsonl 에 기록이 없는 것
+      — 이미 OCR 결과가 있는 문서는 다시 돌리지 않는다.
+    · 품질이 낮거나 빈 결과도 기록한다(다음 실행 때 같은 문서를 다시 돌리지 않도록). 병합은 quality=='ok' 만.
+    · 키는 고정 키(doc id) — preprocessor/merge_ocr.py 가 같은 키로 병합한다."""
+    from preprocessor.merge_ocr import OCR_FILE, ocr_done_ids
+    docs = json.loads((C.PARSED_DIR / "documents.json").read_text(encoding="utf-8"))
+    done = ocr_done_ids()
+    todo = []
+    for d in docs:
+        if d["id"] in done:
+            continue
+        if d.get("source_type") == "board" and (d.get("date") or "") < cutoff:
+            continue
+        files = [a for a in d.get("attachments", []) if a.get("file")
+                 and Path(a["file"]).suffix.lower() in (_IMG_EXT | {".pdf"})]
+        if files:
+            todo.append((d, files))
+    print(f"[OCR-new] OCR 기록 없는 적재 대상 문서 중 이미지·PDF 첨부가 있는 문서 {len(todo)}건")
+    cache, n_ok, n_low = {}, 0, 0
+    stamp = time.strftime("%Y-%m-%d")
+    with open(OCR_FILE, "a", encoding="utf-8") as out:
+        for k, (d, files) in enumerate(todo, 1):
+            for a in files:
+                rel = a["file"]
+                path = C.DATA / rel
+                if rel not in cache:
+                    text, kind = "", "skip"
+                    try:
+                        if not path.exists():
+                            kind = "missing"
+                        elif path.suffix.lower() == ".pdf":
+                            if not _pdf_has_text_layer(path):    # 텍스트 PDF 는 본 파이프라인이 이미 추출
+                                text, kind = ocr_pdf_file(path), "pdf"
+                        else:
+                            text, kind = ocr_image_file(path), "image"
+                    except Exception as e:
+                        print(f"  ! 실패 {path.name}: {e}")
+                        kind = "error"
+                    cache[rel] = (text, kind)
+                text, kind = cache[rel]
+                if kind in ("skip",):
+                    continue               # 텍스트 레이어 있는 PDF — OCR 대상 아님
+                quality = _assess_quality(text)[0] if text else "empty"
+                n_ok += quality == "ok"
+                n_low += quality != "ok"
+                out.write(json.dumps({"doc_id": d["id"], "name": a.get("name") or Path(rel).name,
+                                      "text": text, "quality": quality, "kind": kind, "file": rel,
+                                      "origin": f"tesseract:{stamp}"}, ensure_ascii=False) + "\n")
+                out.flush()
+            print(f"  [{k}/{len(todo)}] {d.get('title', '')[:40]} — 첨부 {len(files)}개")
+    print(f"[OCR-new] 완료 — 쓸 만한 결과(ok) {n_ok}개, 낮은 품질·빈 결과 {n_low}개(병합 제외, 재시도 안 함)")
+    return n_ok
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     only_img = "--images" in args
