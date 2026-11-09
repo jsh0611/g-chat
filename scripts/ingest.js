@@ -61,6 +61,9 @@ function parseDocuments(raw) {
   const cutDocs = [];
   // 중복 제거 적용 목록(dedup_exclusions.json, 없으면 빈 집합) — 원본 jsonl 은 그대로 두고 적재만 건너뜀
   const excluded = loadExclusions('dhsisul');
+  // 부서 표준답변 기준 보정(data/manual_faq.json) — 옛 글 제외·전화번호 등 문자열 보정. 매주 재수집돼도 유지된다.
+  const { corrections, superseded } = loadManualOverrides();
+  const applied = new Set();
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let obj;
@@ -73,6 +76,13 @@ function parseDocuments(raw) {
     const meta = obj.metadata ?? {};
     const docId = meta.doc_id ?? obj.id;
     if (excluded.has(docId)) { seen.set(docId, '중복 제거 제외 목록'); continue; }
+    if (superseded.has(docId)) { seen.set(docId, '부서 표준답변으로 대체'); continue; }
+    for (const c of corrections.filter((c) => c.doc_id === docId)) {
+      if ((obj.content ?? '').includes(c.find)) {
+        obj.content = obj.content.split(c.find).join(c.replace);
+        applied.add(c);
+      }
+    }
     if (isLedger(meta.title)) { seen.set(docId, '대장류(제목)'); continue; }
     if (meta.source_type === 'board' && EXCLUDED_BOARD_CATEGORIES.has(meta.source)) { seen.set(docId, '제외 게시판'); continue; }
     // 기간성 게시판만 옛 글 제외 (FAQ·규정 등은 날짜와 무관하게 유지)
@@ -98,7 +108,21 @@ function parseDocuments(raw) {
       content,
     });
   }
+  // 원문이 바뀌어 더 이상 찾을 수 없는 보정은 알린다 — 홈페이지가 고쳐졌으면 manual_faq.json 에서 지울 것
+  for (const c of corrections) {
+    if (!applied.has(c)) console.warn(`⚠️ 보정 미적용(원문에 없음): ${c.doc_id} "${c.find}" — 홈페이지가 바뀌었는지 확인`);
+  }
   return { docs, seen, cutDocs };
+}
+
+/** data/manual_faq.json 의 공단 문서 보정·대체 목록 (파일이 없으면 빈 목록) */
+function loadManualOverrides(file = 'data/manual_faq.json') {
+  if (!fs.existsSync(file)) return { corrections: [], superseded: new Set() };
+  const j = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  return {
+    corrections: j.corrections ?? [],
+    superseded: new Set((j.supersede ?? []).map((s) => s.doc_id)),
+  };
 }
 
 // normalizeTables · normalizeDate · chunkText · withHeader · syncSource 는 ingest_utils.js (ingest_camping.js 와 공용)

@@ -8,6 +8,7 @@
     "ingest": "node scripts/ingest.js",
     "ingest:camping": "node scripts/ingest_camping.js",
     "ingest:tour": "node scripts/ingest_tour.js",
+    "ingest:manual": "node scripts/ingest_manual.js",
     "embed:backfill": "node scripts/embed_backfill.js",
     "patch:links": "node scripts/patch_reserve_links.js",
     "check:db": "node scripts/check_db.js",

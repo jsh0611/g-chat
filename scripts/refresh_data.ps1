@@ -14,6 +14,8 @@
   6. node patch_reserve_links.js: 다시 적재된 공단 시설 문서에 예약 링크 재주입
   7. (-IncludeTour 지정 시) node ingest_tour.js: 관광 POI 갱신
   8. node ingest_camping.js: 예약시스템 문서(metadata.source='campingkorea') 증분 적재
+  8-1. node ingest_manual.js: 부서 표준답변 FAQ(data/manual_faq.json, metadata.source='manual_faq') 적재
+       (같은 파일의 corrections·supersede 는 5단계 ingest.js 가 공단 문서에 적용)
   9. node check_db.js: 적재 결과 검증 — 임베딩 NULL 행이 있으면 실패 (-AllowNullEmbeddings 면 경고)
 
   실패 판단은 각 단계의 종료 코드로만 한다. (Windows PowerShell 5.1 에서 $ErrorActionPreference="Stop"
@@ -168,6 +170,7 @@ try {
         }
     }
     Invoke-Step -Name "Supabase 적재 - 관광지 통합예약시스템 (ingest_camping.js)" -Exe "node" -ArgList @("scripts/ingest_camping.js")
+    Invoke-Step -Name "Supabase 적재 - 부서 표준답변 FAQ (ingest_manual.js)" -Exe "node" -ArgList @("scripts/ingest_manual.js")
 
     if ($DryRun) {
         Write-Log "########## 드라이런 완료 (DB 변경 없음) ##########"
