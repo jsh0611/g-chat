@@ -2,6 +2,36 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 import OpenAI from "https://esm.sh/openai@4"
 
+// factchat 게이트웨이 키 여러 개를 순서대로 사용 — 앞 키가 402(월 크레딧 소진)면 다음 키로 넘어간다.
+// supabase secrets: OPENAI_API_KEY(1순위), OPENAI_API_KEY2(예비). 예비 키가 없으면 1순위만 쓴다.
+// 소진된 키는 이 인스턴스가 살아 있는 동안 건너뛴다(매 호출마다 402를 한 번씩 맞지 않게).
+const LLM_CLIENTS = ['OPENAI_API_KEY', 'OPENAI_API_KEY2']
+  .map((name) => ({ name, key: Deno.env.get(name) }))
+  .filter((k) => k.key)
+  .map((k) => ({
+    name: k.name,
+    client: new OpenAI({ apiKey: k.key, baseURL: Deno.env.get('OPENAI_BASE_URL') || undefined }),
+  }));
+let llmActive = 0;
+const llm = {
+  chat: {
+    completions: {
+      create: async (body: any): Promise<any> => {
+        for (let i = llmActive; i < LLM_CLIENTS.length; i++) {
+          try {
+            return await LLM_CLIENTS[i].client.chat.completions.create(body);
+          } catch (err: any) {
+            if (err?.status !== 402 || i === LLM_CLIENTS.length - 1) throw err;
+            console.warn(`${LLM_CLIENTS[i].name} 크레딧 소진(402) → ${LLM_CLIENTS[i + 1].name} 로 전환`);
+            llmActive = i + 1;
+          }
+        }
+        throw new Error('사용 가능한 LLM 키가 없습니다');
+      },
+    },
+  },
+};
+
 // 프롬프트 유출 방어(2차): 답변에 시스템 프롬프트 특유의 마커가 보이면 통째로 차단.
 // 1차 방어는 프롬프트 내 비공개 규칙이지만, 우회 추출("요약해줘" 등)이 뚫는 경우의 안전망.
 const PROMPT_LEAK_MARKERS = [
@@ -149,7 +179,8 @@ const NOT_FOR_LESSON = new Set(['채용공고', '자유게시판']);
 // 요금·대관·할인 질문 — 할인·감면 기준은 요금표 페이지가 아니라 예약안내(교류도시 20%)·대관시설(조례 감면 조항)
 // 같은 별도 청크에 있어, 요금만 물으면 검색되지 않아 감면 안내가 빠졌다(2026-11 시범운영 피드백 S-01·S-04·S-06).
 // '할인'이 든 시설 안내 청크는 소수(2026-11 기준 8개)라 키워드로 넣으면 후보 진입이 보장된다.
-const ASKS_FEE = /요금|사용료|이용료|입장료|금액|가격|얼마|대관|할인|감면/;
+// 객실·숙박 시설을 묻는 질문도 답변에 요금이 함께 나가는 경우가 많아 포함한다(감면 조건을 같이 안내해야 함).
+const ASKS_FEE = /요금|사용료|이용료|입장료|금액|가격|얼마|대관|할인|감면|객실|숙박|숙소|캐라반|카라반|글램핑|한옥|캐빈/;
 
 // 검색 질문 임베딩 — Gemini gemini-embedding-001 (factchat 게이트웨이엔 임베딩 API가 없어 별도 키).
 // 문서는 적재 시 RETRIEVAL_DOCUMENT로 임베딩했으므로(embed_utils.js) 질문은 RETRIEVAL_QUERY로 맞춘다.
@@ -197,6 +228,29 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+// 카카오 simpleText는 말풍선당 1000자, 응답당 출력 3개까지다. 요금·감면을 목록으로 풀어 쓰면
+// 1000자를 넘을 수 있어, 빈 줄(문단) 경계에서 나눠 최대 3개 말풍선으로 보낸다.
+const KAKAO_TEXT_MAX = 1000;
+function toSimpleTextOutputs(text: string) {
+  const chunks: string[] = [];
+  let cur = '';
+  for (const para of text.split(/\n{2,}/)) {
+    const next = cur ? `${cur}\n\n${para}` : para;
+    if (next.length <= KAKAO_TEXT_MAX) { cur = next; continue; }
+    if (cur) chunks.push(cur);
+    cur = para;
+    while (cur.length > KAKAO_TEXT_MAX) {
+      chunks.push(cur.slice(0, KAKAO_TEXT_MAX));
+      cur = cur.slice(KAKAO_TEXT_MAX);
+    }
+  }
+  if (cur) chunks.push(cur);
+  if (chunks.length > 3) {
+    chunks.splice(2, chunks.length - 2, chunks.slice(2).join('\n\n').slice(0, KAKAO_TEXT_MAX));
+  }
+  return chunks.map((t) => ({ simpleText: { text: t } }));
+}
+
 serve(async (req) => {
   // 1. 카카오톡에서 보낸 데이터 파싱
   //    본문이 비어 있는 요청(헬스체크·크롤러·GET 등)은 여기서 걸러낸다.
@@ -220,11 +274,7 @@ serve(async (req) => {
         Deno.env.get('SUPABASE_URL') ?? '',
         Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '' // RLS 우회를 위해 Service Key 사용
       );
-      const openai = new OpenAI({
-        apiKey: Deno.env.get('OPENAI_API_KEY'),
-        // 외부 게이트웨이(factchat) 사용 — supabase secrets의 OPENAI_BASE_URL
-        baseURL: Deno.env.get('OPENAI_BASE_URL') || undefined,
-      });
+      const openai = llm;
 
       // [A-0] 이 사용자의 최근 대화 기록을 먼저 불러온다 (질문 재작성 + 답변 생성에 사용)
       const { data: historyRows } = await supabase
@@ -380,7 +430,7 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               version: "2.0",
-              template: { outputs: [{ simpleText: { text: answer } }] }
+              template: { outputs: toSimpleTextOutputs(answer) }
             })
           });
           console.log("콜백 전송 결과:", cbRes.status, await cbRes.text());
@@ -659,7 +709,7 @@ serve(async (req) => {
 - 단, 질문이 묻는 세부 조건(특정 시간대·요일·반·링크 등)이 최신 공지에 없고 같은 행사의 다른 공지에 있으면, 그 공지도 함께 고르세요.
 - 질문과 주제만 비슷하고 답이 없는 조각은 고르지 마세요.
 - 강사·코치를 찾거나 수강하고 싶다는 질문이면, 해당 시설·종목의 가장 최근 강습(수강생) 모집·신청 공지를 우선 고르세요.
-- 요금·사용료·대관·할인을 묻는 질문이면, 같은 시설의 할인·감면 기준(거주지·교류도시, 단체, 숙박 연계 등)이 담긴 조각도 함께 고르세요.
+- 요금·사용료·대관·할인이나 객실·숙박 시설을 묻는 질문이면, 같은 시설의 할인·감면 기준(거주지·교류도시, 단체, 숙박 연계 등)이 담긴 조각도 함께 고르세요.
 - 출력은 JSON 배열 하나만: 예) [3,0,7]`,
               },
               { role: 'user', content: `질문: ${searchQuery}\n\n후보:\n${numbered}` },
@@ -681,11 +731,21 @@ serve(async (req) => {
       // (리랭커가 요금표 조각만 5개 고르면 감면 안내가 빠지는 문제 — 2026-11 S-01)
       // 할인 조각이 휴리스틱 상위 15개에도 못 드는 경우가 있어 전체 후보에서 찾되, 질문의 다른 키워드(시설명 등)가
       // 함께 들어 있는 조각만 쓴다 (엉뚱한 시설의 할인 기준이 붙지 않도록)
-      if (asksFee && !documents.some((d: any) => /할인|감면/.test(d.content))) {
+      // 숙박 요금이 걸린 질문은 '할인'(예약안내의 교류도시·FICC 20%)이 있어야 한다 — 대관시설 조례 조각의
+      // '감면'만 있어도 할인이 있다고 보고 건너뛰어 숙박 할인이 빠졌다(2026-11-09 FEE-1)
+      const lodgingFee = asksFee && (/객실|숙박|숙소|캐라반|카라반|글램핑|한옥|캐빈/.test(userMessage) ||
+        documents.some((d: any) => /숙영시설/.test(d.content)));
+      // 숙박은 현행 교류도시 20% 기준(예약안내·이용요금, 도시 목록 포함)이 있어야 한다 — 보름달살기 등 다른 '할인'만
+      // 있어도 건너뛰어 교류도시 할인이 빠졌다(2026-11-10 FEE-3). 예약안내 본문은 '망상리조트'로 적혀 있어
+      // 질문 키워드 '망상오토캠핑리조트'와 안 겹치므로 숙박이면 '망상'만 있어도 같은 시설로 본다.
+      // 도시 목록(음성군…태안군)까지 있어야 한다 — 현장감면 공지의 "교류도시 20%할인적용"만으로는 목록을 못 쓴다(FEE-1)
+      const discountRe = lodgingFee ? /교류도시[^\n]*20%[\s\S]*음성군[\s\S]*태안군|음성군[\s\S]*태안군[\s\S]*20%/ : /할인|감면/;
+      if (asksFee && !documents.some((d: any) => discountRe.test(d.content))) {
         const others = keywords.filter((k) => !/할인|감면/.test(k));
         const discount = ranked.find((d: any) =>
-          /할인|감면/.test(d.content) && !documents.includes(d) &&
-          others.some((k) => d.content.includes(k) || (d.metadata?.title ?? '').includes(k)));
+          discountRe.test(d.content) && !documents.includes(d) &&
+          (others.some((k) => d.content.includes(k) || (d.metadata?.title ?? '').includes(k)) ||
+            (lodgingFee && /망상/.test(d.content))));
         if (discount) documents = [...documents, discount];
       }
       console.log(`검색질문: ${searchQuery}, 의도: ${intent}, 키워드: ${keywords.join(',')}, 상위 문서: ${documents.map((d: any) => d.metadata?.title).join(' / ')}`);
@@ -800,10 +860,13 @@ ${modeRules}
 - 실제 상담원처럼, 질문을 이해하고 필요한 내용만 골라 자기 말로 풀어서 설명하세요. 공지문·표의 문장을 그대로 옮겨 붙이지 마세요.
 - 첫 문장에서 질문에 바로 답하세요. 예) "네, 해오름스포츠센터 수영장은 평일 오후 9시까지 이용하실 수 있어요."
 - 부드러운 존댓말("~예요", "~하시면 돼요")을 쓰고, 공문 투("~하시기 바랍니다", "~참조", "붙임")는 쓰지 마세요. 과한 감탄이나 가벼운 말투는 피하세요.
-- 보통 3~6문장 정도로 간결하게 답하세요. 공고 번호, 서류 양식, 이용수칙 전문처럼 질문과 직접 관계없는 내용은 빼세요.
-- 요금·할인·대상 구분이 많으면 표 전체를 옮기지 말고, 대부분이 해당되는 기본 항목을 먼저 알려준 뒤 나머지(단체·감면 등)는 한두 문장으로 요약하세요. 사용자가 자기 상황(나이·거주지 등)을 밝혔으면 그에 해당하는 금액만 알려주세요.
-- 요금·사용료를 안내할 때, 자료에 그 시설의 할인·감면(거주지·교류도시, 단체, 숙박 연계 등)이 있으면 대상과 비율을 한 줄로 함께 알려주세요. 사용자가 밝힌 상황(숙박 여부, 인원, 거주지 등)에 해당하는 감면은 빠뜨리지 말고, 숙박 여부를 밝히지 않았어도 숙박과 함께 이용할 때 감면이 있으면 "숙박과 함께 이용하시면 ○% 감면"처럼 조건을 붙여 알려주세요.
-- 할인·감면을 직접 물으면 그 시설에 적용되는 할인 종류(단체, 거주지·교류도시, 감면 대상 등)를 빠짐없이 짧게 알려주세요. 교류도시처럼 대상 지역이 정해진 할인은 지역 이름도 함께 알려주세요.
+- 보통 3~6문장 정도로 간결하게 답하세요(요금·감면을 목록으로 안내할 때는 예외). 공고 번호, 서류 양식, 이용수칙 전문처럼 질문과 직접 관계없는 내용은 빼세요.
+- 요금 구분이 많으면 표 전체를 옮기지 말고, 질문과 관련된 시설·객실의 대표 요금 위주로 알려주세요. 사용자가 자기 상황(나이·거주지 등)을 밝혔으면 그에 해당하는 금액만 알려주세요.
+- 답변에 요금·사용료가 들어가면(객실·예약·대관처럼 다른 것을 물었는데 요금을 함께 안내하는 경우도 포함), 자료에 있는 그 시설의 할인·감면을 아래 [답변 형식 규칙]의 할인·감면 목록으로 자세히 함께 알려주세요. 항목마다 대상, 할인율, 조건(적용 기간·적용 시설, 필요한 증빙, 중복 적용 여부 등 자료에 있는 것)을 적고, 자료에 없는 조건은 지어내지 마세요.
+- 사용자가 밝힌 상황(숙박 여부, 인원, 거주지 등)에 해당하는 감면은 빠뜨리지 말고, 숙박 여부를 밝히지 않았어도 숙박과 함께 이용할 때 감면이 있으면 "숙박과 함께 이용하시면 ○% 감면"처럼 조건을 붙여 알려주세요.
+- 할인·감면을 직접 물으면 그 시설에 적용되는 할인 종류(단체, 거주지·교류도시, 감면 대상 등)를 빠짐없이 짧게 알려주세요.
+- 교류도시 할인을 안내할 때는 "교류도시 20%"처럼 줄여 쓰지 말고, 자료에 있는 교류도시 이름을 빠짐없이 괄호 안에 나열하세요. 예) "FICC 회원·동해시 및 교류도시(충북 음성군, 전북 김제시, …) 주민등록자 — 20%"
+- 같은 할인인데 자료마다 할인율이 다르면, 개정일이 오래된 조례 조문(예: "<개정 2012.12.28.>"이 붙은 감면 조항)보다 현행 예약안내·이용요금 안내의 할인율을 따르세요. 망상오토캠핑리조트·망상제2오토캠핑장 숙박의 FICC·동해시·교류도시 할인은 현행 예약안내 기준 20%입니다.
 - 금지·제한 조건(예: 취소 후 일정 시간 재예약 불가)은 원문의 뜻이 뒤집히지 않게 그대로 전하세요.
 - "변동될 수 있으니 확인해 주세요" 같은 면책 문구는 실제로 변동 가능성이 큰 경우(지난 연도 공지, 실시간 운행 정보)에만 쓰세요.
 - "문맥", "자료", "제공된 정보" 같은 내부 용어를 사용자에게 쓰지 마세요. 정보가 부족하면 "확인된 정보로는 ~" 같은 자연스러운 표현을 쓰세요.
@@ -834,6 +897,22 @@ ${modeRules}
 - 마크다운(**, #, - 등) 서식은 절대 쓰지 마세요. 카카오톡에서 깨져 보입니다.
 - 설명은 자연스러운 문장으로 쓰고, 시간·요금처럼 짧은 수치 정보가 나열될 때만 줄바꿈 목록을 쓰세요. 모든 문장을 목록으로 만들지 마세요.
 - 감면·할인 대상, 신청 절차, 구비서류처럼 조건이나 단계가 3개 이상이면 한 문장에 쉼표로 이어 쓰지 말고 "1. 2. 3." 번호 목록으로 한 줄에 하나씩 쓰세요.
+- 카카오톡은 표를 보여줄 수 없으니 표(|, ─ 등)는 쓰지 마세요. 여러 시설·객실마다 여러 값(평일·주말·성수기 요금 등)이 있으면, 시설·객실 이름을 한 줄로 쓰고 그 아래 값을 "• " 로 한 줄에 하나씩 쓰세요. 시설·객실 사이는 빈 줄로 띄우세요. 한 줄에 " / "로 이어 붙이지 마세요.
+  예)
+  ⛺ 자동차캠핑장
+  • 평일 25,000원
+  • 주말·준성수기 35,000원
+  • 성수기 50,000원
+
+  🚐 캐라반(6인)
+  • 평일 130,000원
+  • 주말·준성수기 170,000원
+  • 성수기 200,000원
+- 할인·감면은 요금 목록 뒤에 빈 줄을 두고 "💡 할인·감면" 한 줄 아래에 "1. 2. 3." 번호 목록으로, 항목마다 "대상 — 할인율 (조건)" 형태로 쓰세요.
+  예)
+  💡 할인·감면
+  1. FICC 회원·동해시 및 교류도시(충북 음성군, 전북 김제시, …) 주민등록자 — 20% (조건)
+  2. (대상) — (할인율) (조건)
 - 목록을 쓸 때는 항목 앞에 어울리는 이모지 하나를 라벨로 붙여도 좋습니다. 예) 📅 기간 / 📍 장소 / 💰 비용 / ⏰ 시간
 - 이모지는 항목 라벨 용도로만 절제해서 사용하세요. 공공기관이므로 남발하지 마세요.
 - 예약 방법을 안내할 때는 자료에 "예약 홈페이지: URL"이 있으면 반드시 그 주소를 예약 링크로 안내하세요.
@@ -855,6 +934,21 @@ ${contextText}${contactBlock}`,
 
     } catch (error) {
       console.error("백그라운드 에러:", error);
+      // 게이트웨이 장애·크레딧 소진(402) 등으로 답변을 못 만들면 사용자는 아무 응답도 받지 못했다
+      // (2026-11-09 factchat insufficient_quota). 콜백으로 안내 메시지라도 보낸다.
+      if (callbackUrl) {
+        try {
+          await fetch(callbackUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version: "2.0", template: { outputs: [{ simpleText: {
+              text: '죄송해요, 지금은 일시적인 오류로 답변을 드리기 어려워요. 잠시 후 다시 질문해 주시거나, 급하신 내용은 동해시시설관리공단 대표전화(033-539-3500)로 문의해 주세요.',
+            } }] } }),
+          });
+        } catch (e) {
+          console.error("오류 안내 콜백 실패:", e);
+        }
+      }
     }
   };
 
