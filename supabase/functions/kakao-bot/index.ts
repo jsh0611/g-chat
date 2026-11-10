@@ -210,6 +210,12 @@ async function embedQuery(text: string): Promise<number[]> {
 // 추론을 끄면 정상 출력되고 호출당 3~8초 → 1~2초로 빨라진다. (openai@4 타입엔 'none'이 없어 any 캐스팅)
 const FAST = { reasoning_effort: 'none' } as any;
 
+// 모델 배정 (2026-11-10): 보조 단계(질문 재작성·키워드·의도 분류·교통 슬롯·재랭킹)는 factchat 의 Gemini Flash-Lite,
+// 사용자에게 나가는 답변(본 답변·인사 응답)은 gpt-5.5. 보조 단계는 짧은 분류·추출이라 저가 모델로 충분하고,
+// gpt-5.5 대비 토큰 단가가 약 1/20 이라 크레딧 소모가 크게 준다. 키는 둘 다 llm(1번 → 402면 2번) 을 쓴다.
+// gemini-3.8-flash 는 max_tokens 가 작으면 생각 토큰에 다 써서 빈 응답(null)이 나와 쓰지 않는다.
+const AUX_MODEL = 'gemini-3.1-flash-lite';
+
 // 카카오톡 simpleText는 마크다운을 렌더링하지 않으므로 서식 기호를 제거한다.
 function stripMarkdown(text: string): string {
   return text
@@ -321,7 +327,7 @@ serve(async (req) => {
           .map((h: any) => `${h.role === 'user' ? '사용자' : '챗봇'}: ${h.content}`)
           .join('\n');
         const rewriteRes = await openai.chat.completions.create({
-          model: 'gpt-5.5',
+          model: AUX_MODEL,
           temperature: 0,
           max_tokens: 100,
           ...FAST,
@@ -359,7 +365,7 @@ serve(async (req) => {
         embedQuery(searchQuery)
           .catch((e: any) => { console.warn('질문 임베딩 실패:', e?.message); return null; }),
         openai.chat.completions.create({
-          model: 'gpt-5.5',
+          model: AUX_MODEL,
           temperature: 0,
           max_tokens: 60,
           ...FAST,
@@ -378,7 +384,7 @@ serve(async (req) => {
           ],
         }),
         openai.chat.completions.create({
-          model: 'gpt-5.5',
+          model: AUX_MODEL,
           temperature: 0,
           max_tokens: 10, // 5면 "chitchat"이 잘림
           ...FAST,
@@ -496,7 +502,7 @@ serve(async (req) => {
         let slots: any = { mode: 'both', dep: null, arr: null, date: todayYmd };
         try {
           const slotRes = await openai.chat.completions.create({
-            model: 'gpt-5.5',
+            model: AUX_MODEL,
             temperature: 0,
             max_tokens: 80,
             ...FAST,
@@ -718,7 +724,7 @@ serve(async (req) => {
               `[${i}] (게시일: ${d.metadata?.date ?? '상시 정보'}) ${d.content.slice(0, 400)}`)
             .join('\n---\n');
           const rerankRes = await openai.chat.completions.create({
-            model: 'gpt-5.5',
+            model: AUX_MODEL,
             temperature: 0,
             max_tokens: 30,
             ...FAST,
