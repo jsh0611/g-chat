@@ -15,6 +15,7 @@
   7. (-IncludeTour 지정 시) node ingest_tour.js: 관광 POI 갱신
   8. node ingest_camping.js: 예약시스템 문서(metadata.source='campingkorea') 증분 적재
   8-1. node ingest_manual.js: 부서 표준답변 FAQ(data/manual_faq.json, metadata.source='manual_faq') 적재
+  8-2. node ingest_pages.js: 시설 전용 사이트 안내 페이지(data/extra_pages.json, metadata.source='extra_pages') 재수집·적재
        (같은 파일의 corrections·supersede 는 5단계 ingest.js 가 공단 문서에 적용)
   9. node check_db.js: 적재 결과 검증 — 임베딩 NULL 행이 있으면 실패 (-AllowNullEmbeddings 면 경고)
 
@@ -171,6 +172,7 @@ try {
     }
     Invoke-Step -Name "Supabase 적재 - 관광지 통합예약시스템 (ingest_camping.js)" -Exe "node" -ArgList @("scripts/ingest_camping.js")
     Invoke-Step -Name "Supabase 적재 - 부서 표준답변 FAQ (ingest_manual.js)" -Exe "node" -ArgList @("scripts/ingest_manual.js")
+    Invoke-Step -Name "Supabase 적재 - 시설 전용 사이트 안내 페이지 (ingest_pages.js)" -Exe "node" -ArgList @("scripts/ingest_pages.js")
 
     if ($DryRun) {
         Write-Log "########## 드라이런 완료 (DB 변경 없음) ##########"

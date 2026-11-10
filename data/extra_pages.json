@@ -1,0 +1,18 @@
+{
+  "_설명": [
+    "공단 본 홈페이지(dhsisul.org) 크롤러가 다루지 않는 시설 전용 사이트의 안내 페이지 목록.",
+    "scripts/ingest_pages.js 가 매주 갱신 때 직접 받아 metadata.source='extra_pages' 로 적재한다.",
+    "본문은 HTML 주석(<!-- -->)을 지운 뒤 '화면에 보이는' 내용만 쓴다 — 주석으로 숨긴 옛 표·감면 문구는 넣지 않는다.",
+    "start: 본문이 시작되는 HTML 조각(첫 등장 위치부터), end: 본문이 끝나는 HTML 조각(그 앞까지)."
+  ],
+  "pages": [
+    {
+      "id": "haeoreum-tennis-guidetime",
+      "url": "https://haeoreum.dhsisul.org/pub/guidetime.do",
+      "title": "해오름스포츠타운 테니스장 이용시간·사용요금·환불 기준 안내",
+      "category": "해오름 테니스장",
+      "start": "<h2 class=\"PageTitle\"",
+      "end": "<footer"
+    }
+  ]
+}
