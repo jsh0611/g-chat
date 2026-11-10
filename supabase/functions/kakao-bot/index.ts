@@ -230,6 +230,18 @@ function stripMarkdown(text: string): string {
 
 // 카카오 simpleText는 말풍선당 1000자, 응답당 출력 3개까지다. 요금·감면을 목록으로 풀어 쓰면
 // 1000자를 넘을 수 있어, 빈 줄(문단) 경계에서 나눠 최대 3개 말풍선으로 보낸다.
+// 수영장 시설 되묻기 — 공단 수영장: 근로자종합복지회관(천곡동), 해오름스포츠센터(구미동)
+const POOL_QUESTION = /수영|아쿠아로빅/;
+const POOL_FACILITY = /복지회관|근로자종합|해오름/;
+// 바다 수영(해수욕장)이나 두 곳 모두를 원하는 질문은 되묻지 않는다
+const POOL_SKIP = /해수욕장|바다|해변|둘 ?다|두 ?곳|모두|전부|각각/;
+const POOL_CLARIFY = `어느 수영장을 말씀하시는지 알려주시겠어요? 동해시시설관리공단이 운영하는 수영장은 두 곳이에요.
+
+1. 근로자종합복지회관(복지회관) 수영장 — 천곡동
+2. 해오름스포츠센터 수영장 — 구미동
+
+시설 이름으로 답해 주시면 바로 안내해 드릴게요.`;
+
 const KAKAO_TEXT_MAX = 1000;
 function toSimpleTextOutputs(text: string) {
   const chunks: string[] = [];
@@ -326,6 +338,7 @@ serve(async (req) => {
 - 마지막 발화가 인사말("ㅎㅇ", "안녕" 등)·감사·잡담이면 절대 질문으로 만들지 말고 입력 그대로 출력하세요.
 - "(N시간 전 대화)"/"(N일 전 대화)" 표시가 붙은 오래된 대화의 주제는, 마지막 질문이 명시적으로 이어갈 때만 반영하세요.
 - 교통편 질문이면 이전 대화에 나온 출발지·도착지·날짜를 빠뜨리지 말고 문장에 포함하세요. 예: 챗봇이 도착지를 묻고 사용자가 "동서울"이라 답하면 → "동해에서 동서울 가는 버스는 몇 시에 있나요?"
+- 챗봇이 "어느 수영장(시설)을 말씀하시는지" 되물었고 사용자가 시설 이름으로 답하면, 그 직전 사용자 질문에 시설 이름을 넣어 재작성하세요. 예: 사용자 "수영장 몇 시까지 해요?" → 챗봇이 어느 수영장인지 되물음 → 사용자 "해오름" → "해오름스포츠센터 수영장은 몇 시까지 운영하나요?"
 - 재작성한 질문 한 문장만 출력하세요.`,
             },
             {
@@ -459,6 +472,17 @@ serve(async (req) => {
         const answer = stripMarkdown(chatRes.choices[0].message.content ?? '안녕하세요! 무엇을 도와드릴까요?');
         console.log(`의도: chitchat, 발화: ${userMessage}`);
         await finish(answer);
+        return;
+      }
+
+      // [A-1b] 수영장 질문인데 어느 시설인지 없으면 검색 전에 되묻는다 (2026-11-10 요청)
+      // 공단 수영장은 근로자종합복지회관·해오름스포츠센터 두 곳 — 시설마다 시간·요금·강습이 달라 섞어 답하면 틀린다.
+      // searchQuery 는 재작성기가 이전 대화의 시설명을 넣은 질문이라, 앞서 시설을 말했으면 되묻지 않는다.
+      // 사용자가 시설명으로 답하면 재작성기가 직전 질문과 합쳐 "해오름스포츠센터 수영장 …?" 으로 만든다.
+      const poolText = `${userMessage} ${searchQuery}`;
+      if (POOL_QUESTION.test(poolText) && !POOL_FACILITY.test(poolText) && !POOL_SKIP.test(poolText)) {
+        console.log(`의도: ${intent}, 수영장 시설 되묻기: ${searchQuery}`);
+        await finish(POOL_CLARIFY);
         return;
       }
 
