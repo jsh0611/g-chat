@@ -278,6 +278,58 @@ function toSimpleTextOutputs(text: string) {
   return chunks.map((t) => ({ simpleText: { text: t } }));
 }
 
+// 답변 속 링크를 긴 주소 대신 버튼으로 보낸다(2026-11-12 요청) — 본문에서 URL을 빼고, 답변 아래
+// textCard 하나에 webLink 버튼(최대 3개)으로 단다. 카카오 응답은 출력 3개까지라 본문이 말풍선 2개를
+// 넘거나 링크가 4개 이상이면 버튼을 못 달아 예전처럼 본문에 주소를 남긴다.
+const URL_RE = /https?:\/\/[A-Za-z0-9\-._~:/?#@!$&*+,;=%]+/g;
+const KAKAO_BTN_LABEL_MAX = 14;
+const LINK_DOMAIN_LABELS: [RegExp, string][] = [
+  [/haeoreum\.dhsisul\.org/, '해오름 홈페이지'],
+  [/dhsisul\.org/, '공단 홈페이지'],
+  [/campingkorea\.or\.kr/, '통합 예약시스템'],
+  [/kma\.go\.kr/, '기상청 단풍 정보'],
+];
+const fitLabel = (s: string) =>
+  s.length <= KAKAO_BTN_LABEL_MAX ? s : s.slice(0, KAKAO_BTN_LABEL_MAX - 1) + '…';
+// linkTitles: URL → 시설명 (공단 시설안내 페이지만 — 게시글 제목은 길어 버튼 이름으로 쓰지 않는다)
+function linkLabel(url: string, lineLabel: string, linkTitles: Map<string, string>) {
+  if (lineLabel) return fitLabel(lineLabel);
+  const title = linkTitles.get(url);
+  if (title) return fitLabel(title.length <= KAKAO_BTN_LABEL_MAX - 3 ? `${title} 안내` : title);
+  return LINK_DOMAIN_LABELS.find(([re]) => re.test(url))?.[1] ?? '링크 열기';
+}
+function toKakaoOutputs(text: string, linkTitles: Map<string, string> = new Map()) {
+  const links: { label: string; webLinkUrl: string }[] = [];
+  const lines: string[] = [];
+  for (const line of text.split('\n')) {
+    const urls = (line.match(URL_RE) ?? []).map((u) => u.replace(/[.,;:!?]+$/, ''));
+    if (urls.length === 0) { lines.push(line); continue; }
+    let rest = line.replace(URL_RE, '')
+      .replace(/\([^()]*[:：]\s*\)|\(\s*\)/g, '')          // "(안내 페이지: )", "()" 같은 빈 괄호
+      .replace(/\s+([.,])/g, '$1').replace(/[\s:：→-]+$/, '').trimEnd();
+    // 주소 앞 글이 짧은 이름표뿐이면("👉 자세히 보기:", "🔗") 그 줄을 지우고 이름표를 버튼 이름으로 쓴다
+    // 👉·🔗 로 시작하는 줄은 조금 길어도 이름표로 본다("👉 수영강습 모집 안내 바로가기: URL")
+    const bare = rest.replace(/[🔗👉📎•▶︎\s]/gu, ' ').trim().replace(/\s*바로\s?가기$/, '');
+    const isLabelLine = bare.length <= KAKAO_BTN_LABEL_MAX || (/^\s*[🔗👉📎▶]/u.test(rest) && bare.length <= 25);
+    for (const u of urls) {
+      if (!links.some((l) => l.webLinkUrl === u)) {
+        links.push({ label: linkLabel(u, isLabelLine && urls.length === 1 ? bare : '', linkTitles), webLinkUrl: u });
+      }
+    }
+    if (!isLabelLine) lines.push(rest);
+  }
+  if (links.length === 0) return toSimpleTextOutputs(text);
+  const body = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const textOutputs = toSimpleTextOutputs(body);
+  if (links.length > 3 || textOutputs.length > 2 || !body) return toSimpleTextOutputs(text);
+  return [...textOutputs, {
+    textCard: {
+      description: '아래 버튼을 눌러 자세한 내용을 확인해 주세요.',
+      buttons: links.map((l) => ({ action: 'webLink', ...l })),
+    },
+  }];
+}
+
 serve(async (req) => {
   // 1. 카카오톡에서 보낸 데이터 파싱
   //    본문이 비어 있는 요청(헬스체크·크롤러·GET 등)은 여기서 걸러낸다.
@@ -447,7 +499,10 @@ serve(async (req) => {
         searchQuery = normalizeReservationSearchTerm(searchQuery);
       }
 
+      // 링크 버튼 이름용: URL → 공단 시설안내 페이지 시설명 (검색 후 채운다)
+      const linkTitles = new Map<string, string>();
       // 답변 저장 + 카카오 콜백 전송 (모든 분기 공통) — 전송 직전 유출 가드 통과
+      // 대화 기록에는 주소가 든 원문을 남긴다(이어지는 질문의 재작성·맥락용)
       const finish = async (rawAnswer: string) => {
         const answer = guardPromptLeak(rawAnswer);
         await supabase.from('conversations').insert([
@@ -460,7 +515,7 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               version: "2.0",
-              template: { outputs: toSimpleTextOutputs(answer) }
+              template: { outputs: toKakaoOutputs(answer, linkTitles) }
             })
           });
           console.log("콜백 전송 결과:", cbRes.status, await cbRes.text());
@@ -879,6 +934,9 @@ serve(async (req) => {
 
       // 문서별 원문 URL을 자료에 노출 → 예약/신청 안내 시 링크 제공 가능 (문서당 1회)
       const seenUrl = new Set<string>();
+      for (const d of documents) {
+        if (/^facility-/.test(String(d.metadata?.doc_id ?? '')) && d.metadata?.url) linkTitles.set(d.metadata.url, d.metadata.title);
+      }
       const docsContext = documents.map((d: any) => {
         // 예약시스템 자료는 출처를 붙여, 캠핑장 예약·이용료는 이 자료를 기준으로 답하게 한다
         const content = (d.metadata?.source === 'campingkorea' ? '[출처: 동해시 관광지 통합 예약시스템]\n' : '') + cleanChunk(d.content);
